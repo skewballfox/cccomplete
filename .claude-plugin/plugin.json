@@ -1,0 +1,63 @@
+{
+  "name": "cccomplete",
+  "version": "0.1.0",
+  "description": "Completes the word at the end of your prompt from a trie of your conversation, with an inline suggestion and a bar of alternatives",
+  "author": { "name": "Joshua Ferguson" },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "accept_key": {
+      "type": "string",
+      "title": "Accept key",
+      "description": "Key that accepts the shown suggestion. Examples: tab, ctrl+y, meta+enter.",
+      "default": "tab"
+    },
+    "next_key": {
+      "type": "string",
+      "title": "Next-suggestion key",
+      "description": "Key that moves to the next suggestion. A letter needs ctrl or meta.",
+      "default": "ctrl+n"
+    },
+    "previous_key": {
+      "type": "string",
+      "title": "Previous-suggestion key",
+      "description": "Key that moves to the previous suggestion. A letter needs ctrl or meta.",
+      "default": "ctrl+p"
+    },
+    "display": {
+      "type": "string",
+      "title": "Display",
+      "description": "Where suggestions appear: inline in the prompt, in a bar above it, or both.",
+      "options": ["both", "inline", "bar"],
+      "default": "both"
+    },
+    "limit": {
+      "type": "number",
+      "title": "Suggestions shown",
+      "description": "How many suggestions the bar offers, from 1 to 9.",
+      "default": 5,
+      "min": 1,
+      "max": 9
+    },
+    "min_prefix": {
+      "type": "number",
+      "title": "Minimum letters",
+      "description": "How many letters you type before suggestions appear, from 1 to 4.",
+      "default": 2,
+      "min": 1,
+      "max": 4
+    },
+    "trailing_space": {
+      "type": "boolean",
+      "title": "Add a space after accepting",
+      "description": "Add a space after an accepted word.",
+      "default": true
+    },
+    "sources": {
+      "type": "string",
+      "title": "Words come from",
+      "description": "Which text feeds the trie: your prompts, Claude's answers, or both.",
+      "options": ["both", "prompts", "answers"],
+      "default": "both"
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "extends": "./.claude-plugin/types/tsconfig.json",
+  "compilerOptions": {
+    "exactOptionalPropertyTypes": true,
+    "noImplicitReturns": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
+  },
+  "include": [".claude-plugin/types", "hooks", "src", "types", "tests"]
+}

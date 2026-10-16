@@ -1,0 +1,13 @@
+{
+  "name": "cccomplete",
+  "owner": {
+    "name": "Joshua Ferguson"
+  },
+  "plugins": [
+    {
+      "name": "cccomplete",
+      "source": "./"
+    }
+  ],
+  "description": "Claude Code mods by Joshua Ferguson"
+}
