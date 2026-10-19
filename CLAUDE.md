@@ -55,13 +55,6 @@ All rules are mandatory. Where a rule rests on a fact about Claude Code, the fac
 - Document purpose and constraints, not what the code plainly does. Start each exported item with a one-sentence summary.
 - Update `docs/ALGORITHM.md` when the trie, its ranking or its measurements change. Update the README option table when an option changes.
 
-## Open questions
-
-Keep these visible until a live session settles them:
-
-- Whether the host reports `tab`, `ctrl+n` and `ctrl+p` through `prompt.edit`.
-- Whether `$.prompt.fill` in `replace` mode leaves the cursor at the end of the draft.
-- Whether the install commands in the README work as written.
 
 ## Known warnings
 
