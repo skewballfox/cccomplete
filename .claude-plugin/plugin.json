@@ -3,25 +3,26 @@
   "version": "0.1.0",
   "description": "Completes the word at the end of your prompt from a trie of your conversation, with an inline suggestion and a bar of alternatives",
   "author": { "name": "Joshua Ferguson" },
+  "license": "MIT OR Apache-2.0",
   "types": "./types/index.d.ts",
   "userConfig": {
     "accept_key": {
       "type": "string",
       "title": "Accept key",
-      "description": "Key that accepts the shown suggestion. Examples: tab, ctrl+y, meta+enter.",
-      "default": "tab"
+      "description": "Keys that accept the shown suggestion, separated by commas. Examples: right, ctrl+e, ctrl+y.",
+      "default": "right, ctrl+e"
     },
     "next_key": {
       "type": "string",
       "title": "Next-suggestion key",
       "description": "Key that moves to the next suggestion. A letter needs ctrl or meta.",
-      "default": "ctrl+n"
+      "default": "ctrl+d"
     },
     "previous_key": {
       "type": "string",
       "title": "Previous-suggestion key",
       "description": "Key that moves to the previous suggestion. A letter needs ctrl or meta.",
-      "default": "ctrl+p"
+      "default": "ctrl+a"
     },
     "display": {
       "type": "string",
@@ -29,6 +30,25 @@
       "description": "Where suggestions appear: inline in the prompt, in a bar above it, or both.",
       "options": ["both", "inline", "bar"],
       "default": "both"
+    },
+    "bar_style": {
+      "type": "string",
+      "title": "Bar style",
+      "description": "How the bar draws matches: powerline segments (needs a Nerd Font) or plain buttons you can click.",
+      "options": ["powerline", "buttons"],
+      "default": "powerline"
+    },
+    "ghost_color": {
+      "type": "string",
+      "title": "Inline suggestion colour",
+      "description": "How the inline text is painted: dim, a colour name, or a hex colour. Use your terminal's background colour, such as #1e1e1e, to hide it while the keys still work.",
+      "default": "dim"
+    },
+    "dictionary": {
+      "type": "string",
+      "title": "Dictionary",
+      "description": "Words loaded at session start: bundled, none, or the path of a dictionary file (one word per line, best first).",
+      "default": "bundled"
     },
     "limit": {
       "type": "number",

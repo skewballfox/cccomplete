@@ -68,7 +68,7 @@ The plugin writes the `view` value only when it changes, so an idle prompt cause
 
 The index never changes while the user types.
 
-- **`session.start`** seeds the trie from the transcript. This also runs after every reload.
+- **`session.start`** seeds the trie from the dictionary file (`$.fs.read`), then from the transcript, so the conversation outranks the dictionary. This also runs after every reload. If the named dictionary cannot be read, it shows a toast and loads the bundled one.
 - **`prompt.submit`** removes any leftover suggestion from the text, then queues the prompt.
 - **`turn.complete`** folds the queued prompts and Claude's answer into the trie. Subagent turns are skipped.
 
@@ -96,4 +96,4 @@ What remains unverified until a live session runs:
 - whether the host reports a key such as `tab` through `prompt.edit` at all;
 - whether `$.prompt.fill` in `replace` mode leaves the cursor at the end of the draft, which the bar's buttons assume.
 
-`/cccomplete` reports the last key the hook received, so the first can be checked in seconds.
+`/cccomplete` reports the last key the hook received and the recent keys that are not letters or digits, so the first can be checked in seconds. The second list exists because typing `/cccomplete` overwrites the last key.

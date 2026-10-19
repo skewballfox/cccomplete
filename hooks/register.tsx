@@ -19,10 +19,12 @@ import type { Register } from 'claude-code'
 import type { CompletionView } from '../types'
 import { accept, actionFor, attach, clip, cycle, detach, fittingMatches, withoutGhost } from '../src/completion'
 import type { EditShape, Outcome } from '../src/completion'
+import { describeDictionary, describeUnreadable, parseDictionary, seedTrie } from '../src/dictionary'
 import { describeKeys, describeProblem, parseConfig } from '../src/config'
 import type { Sources } from '../src/config'
-import { formatCombo, formatPress } from '../src/keys'
+import { formatCombo, formatPress, recordEdit, remember } from '../src/keys'
 import type { KeyPress } from '../src/keys'
+import { powerbar } from '../src/powerbar'
 import { CompletionTrie } from '../src/trie'
 
 const view = atom({ plugin: 'cccomplete', key: 'view' } as const, null)
@@ -36,8 +38,11 @@ export const register: Register = (on, options) => {
   const trie = new CompletionTrie()
   const pending: string[] = []
   let lastKey: KeyPress | null = null
+  let recentKeys: readonly KeyPress[] = []
+  let recentEdits: readonly string[] = []
   let lastMs = 0
   let worstMs = 0
+  let dictionaryWords = 0
 
   const measure = <Result,>(work: () => Result): Result => {
     const started = performance.now()
@@ -52,6 +57,15 @@ export const register: Register = (on, options) => {
       name: 'cccomplete',
       description: 'Show the completer status and the last key it received',
     })
+    // The dictionary seeds the index first, so every word from the conversation outranks it.
+    const named = config.dictionary.kind === 'file' ? config.dictionary.path : null
+    const fromFile = named === null ? null : await $.fs.read(named).catch(() => null)
+    const text =
+      config.dictionary.kind === 'none'
+        ? ''
+        : (fromFile ?? (await $.fs.read(`${$.plugin.root}/data/dictionary.txt`).catch(() => '')))
+    dictionaryWords = seedTrie(trie, parseDictionary(text))
+    if (named !== null && fromFile === null) $.ui.toast(describeUnreadable(named))
     const rows = await $.session.messages()
     rows.filter(row => feeds(config.sources, row.role)).forEach(row => trie.ingest(row.text))
     if (problems.length > 0) $.ui.toast(problems.map(describeProblem).join(' '))
@@ -81,7 +95,11 @@ export const register: Register = (on, options) => {
     const publish = async (outcome: Outcome): Promise<void> => {
       if (current !== null || outcome.view !== null) await update($, view, () => outcome.view)
     }
-    if (e.key !== undefined) lastKey = e.key
+    if (e.key !== undefined) {
+      lastKey = e.key
+      recentKeys = remember(recentKeys, e.key, 6)
+    }
+    recentEdits = recordEdit(recentEdits, { key: e.key ?? null, inputText: e.inputText, start: e.start, end: e.end }, 6)
 
     const action = actionFor(e.key, current, config)
     if (action !== null && current !== null) {
@@ -122,6 +140,23 @@ export const register: Register = (on, options) => {
 
     const { Box, Button, Text } = $.ui.resolve(e)
     const hint = describeKeys(config)
+    if (config.barStyle === 'powerline') {
+      const runs = powerbar(current?.matches ?? [], current?.index ?? 0, hint, e.props.bodyColumns)
+      return (
+        <Box>
+          {runs.map((run, index) => (
+            <Text
+              key={`run-${index}`}
+              color={run.color}
+              {...(run.background === null ? {} : { backgroundColor: run.background })}
+              dimColor={run.dim}
+            >
+              {run.text}
+            </Text>
+          ))}
+        </Box>
+      )
+    }
     if (current === null) {
       return (
         <Box>
@@ -156,9 +191,12 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'cccomplete' }, async () => ({
     text: [
       `words indexed: ${trie.size}`,
-      `keys: accept ${formatCombo(config.accept)}, next ${formatCombo(config.next)}, previous ${formatCombo(config.previous)}`,
+      `keys: accept ${config.accept.map(formatCombo).join(' or ')}, next ${formatCombo(config.next)}, previous ${formatCombo(config.previous)}`,
+      describeDictionary(config.dictionary, dictionaryWords),
       `display: ${config.display}; limit: ${config.limit}; minimum letters: ${config.minPrefix}; sources: ${config.sources}`,
       `last key the prompt hook received: ${lastKey === null ? 'none yet' : formatPress(lastKey)}`,
+      `recent edits that are not plain typing: ${recentEdits.length === 0 ? 'none yet' : recentEdits.join('; ')}`,
+      `recent keys that are not letters or digits: ${recentKeys.length === 0 ? 'none yet' : recentKeys.map(formatPress).join(', ')}`,
       `pipeline time: last ${lastMs.toFixed(3)} ms, worst ${worstMs.toFixed(3)} ms (target: under 13 ms)`,
       ...problems.map(describeProblem),
     ].join('\n'),

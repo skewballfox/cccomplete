@@ -11,6 +11,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import { attach, detach } from '../src/completion'
 import type { EditShape } from '../src/completion'
 import { DEFAULTS } from '../src/config'
+import { parseDictionary, seedTrie } from '../src/dictionary'
 import { CompletionTrie } from '../src/trie'
 import { seeded, vocabulary, word } from './support'
 
@@ -96,6 +97,16 @@ describe('latency', () => {
     const recorded = trie.ingest(turn)
     const elapsed = performance.now() - started
     console.log(`ingested ${recorded} words (${turn.length} characters) in ${elapsed.toFixed(2)} ms`)
+    expect(elapsed).toBeLessThan(1000)
+  })
+  test('loading a 47,000-word dictionary at session start takes well under a second', { timeoutMs: 60_000 }, () => {
+    const text = `# header\n${vocabulary(seeded(5), 47_000).join('\n')}\n`
+    const started = performance.now()
+    const trie = new CompletionTrie()
+    const added = seedTrie(trie, parseDictionary(text))
+    const elapsed = performance.now() - started
+    console.log(`dictionary: parsed and seeded ${added} words in ${elapsed.toFixed(1)} ms`)
+    expect(trie.size).toBe(added)
     expect(elapsed).toBeLessThan(1000)
   })
 })

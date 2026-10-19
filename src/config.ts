@@ -11,13 +11,29 @@ import type { KeyCombo, KeyParseError } from './keys'
 
 export type Display = 'inline' | 'bar' | 'both'
 export type Sources = 'prompts' | 'answers' | 'both'
+export type BarStyle = 'powerline' | 'buttons'
 export type PrefixLength = 1 | 2 | 3 | 4
 
+/** How the inline suggestion is painted: dim, or in one colour (a terminal's background colour hides it). */
+export type GhostPaint = Readonly<{ kind: 'dim' }> | Readonly<{ kind: 'color'; color: string }>
+
+/** Where the dictionary comes from: the file the plugin ships, no dictionary, or a file the user names. */
+export type DictionarySource =
+  | Readonly<{ kind: 'bundled' }>
+  | Readonly<{ kind: 'none' }>
+  | Readonly<{ kind: 'file'; path: string }>
+
+/** One or more key combinations. Never empty, so an accept key always exists. */
+export type KeyList = readonly [KeyCombo, ...KeyCombo[]]
+
 export type Config = Readonly<{
-  accept: KeyCombo
+  accept: KeyList
   next: KeyCombo
   previous: KeyCombo
   display: Display
+  barStyle: BarStyle
+  ghostPaint: GhostPaint
+  dictionary: DictionarySource
   limit: SuggestionLimit
   minPrefix: PrefixLength
   trailingSpace: boolean
@@ -30,12 +46,15 @@ export type OptionName =
   | 'next_key'
   | 'previous_key'
   | 'display'
+  | 'bar_style'
+  | 'ghost_color'
+  | 'dictionary'
   | 'limit'
   | 'min_prefix'
   | 'trailing_space'
   | 'sources'
 
-export type ProblemReason = KeyParseError | 'not-an-option' | 'out-of-range' | 'wrong-type' | 'duplicate-binding'
+export type ProblemReason = KeyParseError | 'not-an-option' | 'out-of-range' | 'wrong-type' | 'duplicate-binding' | 'not-a-color'
 
 export type ConfigProblem = Readonly<{ option: OptionName; reason: ProblemReason; value: string }>
 
@@ -49,10 +68,13 @@ const key = (text: string): KeyCombo => {
 }
 
 export const DEFAULTS: Config = {
-  accept: key('tab'),
-  next: key('ctrl+n'),
-  previous: key('ctrl+p'),
+  accept: [key('right'), key('ctrl+e')],
+  next: key('ctrl+d'),
+  previous: key('ctrl+a'),
   display: 'both',
+  barStyle: 'powerline',
+  ghostPaint: { kind: 'dim' },
+  dictionary: { kind: 'bundled' },
   limit: 5,
   minPrefix: 2,
   trailingSpace: true,
@@ -62,6 +84,7 @@ export const DEFAULTS: Config = {
 const LIMITS = [1, 2, 3, 4, 5, 6, 7, 8, 9] as const satisfies readonly SuggestionLimit[]
 const PREFIX_LENGTHS = [1, 2, 3, 4] as const satisfies readonly PrefixLength[]
 const DISPLAYS = ['inline', 'bar', 'both'] as const satisfies readonly Display[]
+const BAR_STYLES = ['powerline', 'buttons'] as const satisfies readonly BarStyle[]
 const SOURCES = ['prompts', 'answers', 'both'] as const satisfies readonly Sources[]
 
 /** A field's value, or the reason it was refused. */
@@ -75,6 +98,40 @@ const keyField = (raw: RawOptions[string] | undefined, fallback: KeyCombo): Fiel
   if (typeof raw !== 'string') return pick(fallback, fallback, 'wrong-type')
   const parsed = parseCombo(raw)
   return parsed.ok ? pick(parsed.value, fallback, null) : pick(fallback, fallback, parsed.error)
+}
+
+/** Parses a comma-separated list of key combinations, such as `right, ctrl+e`. One bad entry refuses the whole list. */
+const keyListField = (raw: RawOptions[string] | undefined, fallback: KeyList): Field<KeyList> => {
+  if (raw === undefined) return pick(fallback, fallback, null)
+  if (typeof raw !== 'string') return pick(fallback, fallback, 'wrong-type')
+  // A comma that follows `+` is the key itself (`ctrl+,`); any other comma separates two combinations.
+  const parsed = raw.split(/(?<!\+),/).map(parseCombo)
+  const failure = parsed.find(result => !result.ok)
+  if (failure !== undefined) return pick(fallback, fallback, failure.ok ? 'empty' : failure.error)
+  const [head, ...tail] = parsed.flatMap(result => (result.ok ? [result.value] : []))
+  return head === undefined ? pick(fallback, fallback, 'empty') : pick([head, ...tail], fallback, null)
+}
+
+/** Parses `bundled`, `none` or a file path. A path is not checked here: the hooks module reports one it cannot read. */
+const dictionaryField = (raw: RawOptions[string] | undefined, fallback: DictionarySource): Field<DictionarySource> => {
+  if (raw === undefined) return pick(fallback, fallback, null)
+  if (typeof raw !== 'string') return pick(fallback, fallback, 'wrong-type')
+  const text = raw.trim()
+  if (text === '') return pick(fallback, fallback, 'empty')
+  const word = text.toLowerCase()
+  if (word === 'bundled' || word === 'none') return pick({ kind: word }, fallback, null)
+  return pick({ kind: 'file', path: text }, fallback, null)
+}
+
+const COLOR = /^(#[0-9a-f]{3}|#[0-9a-f]{6}|[a-z]+)$/i
+
+/** Parses `dim`, a colour name such as `black`, or a hex colour such as `#1e1e1e`. */
+const paintField = (raw: RawOptions[string] | undefined, fallback: GhostPaint): Field<GhostPaint> => {
+  if (raw === undefined) return pick(fallback, fallback, null)
+  if (typeof raw !== 'string') return pick(fallback, fallback, 'wrong-type')
+  const text = raw.trim()
+  if (text.toLowerCase() === 'dim') return pick({ kind: 'dim' }, fallback, null)
+  return COLOR.test(text) ? pick({ kind: 'color', color: text }, fallback, null) : pick(fallback, fallback, 'not-a-color')
 }
 
 const choiceField = <Choice extends string>(
@@ -116,10 +173,13 @@ export type ConfigResult = Readonly<{ config: Config; problems: readonly ConfigP
  * the earlier action wins, in the order accept, next, previous.
  */
 export const parseConfig = (options: RawOptions): ConfigResult => {
-  const accept = keyField(options['accept_key'], DEFAULTS.accept)
+  const accept = keyListField(options['accept_key'], DEFAULTS.accept)
   const next = keyField(options['next_key'], DEFAULTS.next)
   const previous = keyField(options['previous_key'], DEFAULTS.previous)
   const display = choiceField(options['display'], DISPLAYS, DEFAULTS.display)
+  const barStyle = choiceField(options['bar_style'], BAR_STYLES, DEFAULTS.barStyle)
+  const ghostPaint = paintField(options['ghost_color'], DEFAULTS.ghostPaint)
+  const dictionary = dictionaryField(options['dictionary'], DEFAULTS.dictionary)
   const limit = numberField(options['limit'], LIMITS, DEFAULTS.limit)
   const minPrefix = numberField(options['min_prefix'], PREFIX_LENGTHS, DEFAULTS.minPrefix)
   const trailingSpace = booleanField(options['trailing_space'], DEFAULTS.trailingSpace)
@@ -131,6 +191,9 @@ export const parseConfig = (options: RawOptions): ConfigResult => {
       ['next_key', next, options['next_key']],
       ['previous_key', previous, options['previous_key']],
       ['display', display, options['display']],
+      ['bar_style', barStyle, options['bar_style']],
+      ['ghost_color', ghostPaint, options['ghost_color']],
+      ['dictionary', dictionary, options['dictionary']],
       ['limit', limit, options['limit']],
       ['min_prefix', minPrefix, options['min_prefix']],
       ['trailing_space', trailingSpace, options['trailing_space']],
@@ -141,8 +204,8 @@ export const parseConfig = (options: RawOptions): ConfigResult => {
   )
 
   const clashes: readonly ConfigProblem[] = [
-    ...(sameCombo(next.value, accept.value) ? [clash('next_key', next.value)] : []),
-    ...(sameCombo(previous.value, accept.value) || sameCombo(previous.value, next.value)
+    ...(accept.value.some(combo => sameCombo(next.value, combo)) ? [clash('next_key', next.value)] : []),
+    ...(accept.value.some(combo => sameCombo(previous.value, combo)) || sameCombo(previous.value, next.value)
       ? [clash('previous_key', previous.value)]
       : []),
   ]
@@ -153,6 +216,9 @@ export const parseConfig = (options: RawOptions): ConfigResult => {
       next: next.value,
       previous: previous.value,
       display: display.value,
+      barStyle: barStyle.value,
+      ghostPaint: ghostPaint.value,
+      dictionary: dictionary.value,
       limit: limit.value,
       minPrefix: minPrefix.value,
       trailingSpace: trailingSpace.value,
@@ -176,4 +242,4 @@ export const describeProblem = (problem: ConfigProblem): string =>
 
 /** Names the three bindings for the hint in the bar. */
 export const describeKeys = (config: Config): string =>
-  `${formatCombo(config.accept)} accepts, ${formatCombo(config.next)} and ${formatCombo(config.previous)} cycle`
+  `${config.accept.map(formatCombo).join(' or ')} accepts, ${formatCombo(config.next)} and ${formatCombo(config.previous)} cycle`

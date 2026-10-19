@@ -19,7 +19,7 @@ The plugin must answer one question on every keystroke: *which stored words exte
 | C1. The index updates after a chat turn, not while typing. | Project requirement | Insertion may cost more than lookup. Insertion happens in a batch, off the typing path. |
 | C2. A lookup must finish in under 13 ms. | Project requirement | Lookup cost must not depend on how many words the prefix matches. |
 | C3. The index holds a conversation's vocabulary: thousands to tens of thousands of distinct words. | Assumption. The test uses 52,203 words. | A structure sized for millions of words is not needed. |
-| C4. Words only arrive. Nothing is removed. | Design choice | The structure needs no deletion. |
+| C4. Words only arrive. Nothing is removed. | Design choice | The structure needs no deletion. A bounded or persistent store would need eviction, which the exactness argument below rules out in the live index. |
 | C5. The code runs in the Claude Code mod environment. | Type declarations, 2.1.292 | Plain TypeScript only. The environment has no WebAssembly, no native modules and no `eval`. |
 
 C5 matters because it removes the common escape route of writing the index in a compiled language. A probe mod run on 2026-10-15 confirmed that the `WebAssembly` global does not exist.
@@ -88,6 +88,7 @@ These numbers come from `claude plugin test .` on 2026-10-15. They cover the ste
 | A one-letter prefix against a seven-letter prefix | 0.0004 ms and 0.0003 ms | equal cost |
 | A 200,006-character draft | 0.03 ms | under 13 ms |
 | Folding in a 31,200-character turn (6,000 words) | 2 to 3 ms | no target; runs after the turn |
+| Parsing and seeding a 47,000-word dictionary (2026-10-19) | 57 ms | no target; runs once at session start |
 
 The equal cost of the short and long prefix shows the property that matters. A one-letter prefix matches a large share of the vocabulary. The lookup still reads one list.
 
@@ -119,6 +120,12 @@ Revisit the choice if either assumption changes:
 
 - **The vocabulary reaches millions of words.** The lists then cost real memory. A transducer rebuilt after each turn, or an external process reached through `$.process`, becomes worth its complexity. A process adds a round trip to every keystroke. The `prompt.edit` hook has a 50 ms limit, so measure first.
 - **Ranking needs to forget.** The ranks here only rise. A decay would break the exactness argument above, and the lists would need rebuilding on decay.
+
+## Seeding from a dictionary
+
+At session start the plugin inserts the words of a dictionary file, last line first, each once. The first line gets the newest tick, so earlier lines rank higher among equal counts. The file format and its source are in [DICTIONARY.md](DICTIONARY.md).
+
+This uses only `insert`, so the exactness argument holds without change. Each seed word has a count of one. The plugin inserts seed words before the transcript, so every word from the conversation has a newer tick. A word from the conversation therefore outranks every seed word it ties on count with, and any word with a higher count outranks it by count.
 
 ## Known behaviours
 

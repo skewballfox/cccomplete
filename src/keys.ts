@@ -2,7 +2,7 @@
  * Parses the key combinations a user configures, and matches them against key presses.
  *
  * Audience: contributors to cccomplete. Not covered: which combinations the
- * terminal delivers to the plugin at all (run `/cccomplete` to see the last key it received).
+ * terminal delivers to the plugin at all (run `/cccomplete` and read its list of recent keys). Most terminals send a punctuation key with `ctrl` as the bare character, so a combination such as `ctrl+.` works only where the terminal reports it apart.
  */
 
 const NAMED_KEYS = [
@@ -14,9 +14,11 @@ const LETTERS = [
   'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
 ] as const
 const DIGITS = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'] as const
+/** Every punctuation key except `+`, which separates the parts of a combination. */
+const PUNCTUATION = ['.', ',', ';', '/', '\\', "'", '[', ']', '-', '=', '`'] as const
 
 export type NamedKey = (typeof NAMED_KEYS)[number]
-export type PrintableKey = (typeof LETTERS)[number] | (typeof DIGITS)[number]
+export type PrintableKey = (typeof LETTERS)[number] | (typeof DIGITS)[number] | (typeof PUNCTUATION)[number]
 export type KeyName = NamedKey | PrintableKey
 
 /** A key plus the modifiers that must be held with it, and no others. */
@@ -51,7 +53,7 @@ export type Parsed<Value, Failure> =
 type Modifier = 'ctrl' | 'shift' | 'meta'
 
 const NAMED = new Set<string>(NAMED_KEYS)
-const PRINTABLE = new Set<string>([...LETTERS, ...DIGITS])
+const PRINTABLE = new Set<string>([...LETTERS, ...DIGITS, ...PUNCTUATION])
 
 const KEY_ALIASES: Readonly<Record<string, NamedKey>> = { enter: 'return', esc: 'escape' }
 const MODIFIER_ALIASES: Readonly<Record<string, Modifier>> = {
@@ -71,7 +73,7 @@ const fail = (error: KeyParseError): Parsed<KeyCombo, KeyParseError> => ({ ok: f
  * Parses text such as `tab`, `ctrl+n` or `ctrl+shift+enter`.
  *
  * Rules: case does not matter; `+` separates parts; the last part is the key.
- * A letter or digit needs `ctrl` or `meta`, because bare printable keys are typing.
+ * A letter, digit or punctuation key needs `ctrl` or `meta`, because bare printable keys are typing.
  */
 export const parseCombo = (text: string): Parsed<KeyCombo, KeyParseError> => {
   const parts = text.trim().toLowerCase().split('+').map(part => part.trim())
@@ -103,6 +105,43 @@ export const matches = (combo: KeyCombo, press: KeyPress): boolean =>
 
 export const sameCombo = (a: KeyCombo, b: KeyCombo): boolean =>
   a.key === b.key && a.ctrl === b.ctrl && a.shift === b.shift && a.meta === b.meta
+
+const ALPHANUMERIC = /^[a-z0-9]$/i
+
+/**
+ * True when `press` is more than typing: a named key, a key held with `ctrl` or `meta`, or a
+ * punctuation character. Plain letters, digits, capitals and the space bar are typing.
+ */
+export const isNotable = (press: KeyPress): boolean =>
+  press.key.length > 1 ||
+  press.ctrl === true ||
+  press.meta === true ||
+  (!ALPHANUMERIC.test(press.key) && press.key !== ' ')
+
+/**
+ * Returns `history` with `press` added at the end when it is notable, keeping the newest `limit`.
+ *
+ * The status command shows this history, so the keys under test are not pushed out by the
+ * letters typed to run the command.
+ */
+export const remember = (history: readonly KeyPress[], press: KeyPress, limit: number): readonly KeyPress[] =>
+  isNotable(press) ? [...history, press].slice(-limit) : history
+
+/** What the host reports about one edit: the key that made it (`null` for a paste or a burst), the text it put in, and the span it replaced. */
+export type EditInfo = Readonly<{ key: KeyPress | null; inputText: string; start: number; end: number }>
+
+/** Renders an edit for the status command, for example `ctrl+j: "\n" @5..5`. */
+export const describeEdit = (edit: EditInfo): string =>
+  `${edit.key === null ? 'no key' : formatPress(edit.key)}: ${JSON.stringify(edit.inputText)} @${edit.start}..${edit.end}`
+
+/**
+ * Returns `history` with `edit` added when it is not plain typing, keeping the newest `limit`.
+ *
+ * Plain typing is an edit made by one key that is not notable. A paste or a burst has no key, so it is kept.
+ * The status command shows this list so that what the host reports for a key can be read off directly.
+ */
+export const recordEdit = (history: readonly string[], edit: EditInfo, limit: number): readonly string[] =>
+  edit.key !== null && !isNotable(edit.key) ? history : [...history, describeEdit(edit)].slice(-limit)
 
 /** Renders a combo the way a user writes it: `ctrl+shift+n`. */
 export const formatCombo = (combo: KeyCombo): string =>

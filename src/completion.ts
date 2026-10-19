@@ -35,8 +35,9 @@ export type EditShape = Readonly<{
   key?: KeyPress
 }>
 
-/** A dim run over the inline suggestion, in the host's decoration shape. */
-export type GhostStyle = Readonly<{ start: number; end: number; dimColor: true }>
+/** A styled run over the inline suggestion, in the host's decoration shape: dim, or painted in one colour. */
+export type GhostStyle = Readonly<{ start: number; end: number }> &
+  (Readonly<{ dimColor: true }> | Readonly<{ color: string }>)
 
 export type PromptBoxOut = Readonly<{
   text: string
@@ -84,7 +85,7 @@ export const actionFor = (
   config: Config,
 ): Action | null => {
   if (key === undefined || view === null) return null
-  if (keyMatches(config.accept, key)) return 'accept'
+  if (config.accept.some(combo => keyMatches(combo, key))) return 'accept'
   if (keyMatches(config.next, key)) return 'next'
   if (keyMatches(config.previous, key)) return 'previous'
   return null
@@ -106,11 +107,17 @@ const viewOf = (
   }
 }
 
-const boxOf = (view: CompletionView): PromptBoxOut => ({
+const boxOf = (view: CompletionView, config: Config): PromptBoxOut => ({
   text: view.draft,
   cursor: view.prefixLength,
   decorations:
-    view.ghostLength === 0 ? [] : [{ start: view.prefixLength, end: view.draft.length, dimColor: true }],
+    view.ghostLength === 0
+      ? []
+      : [
+          config.ghostPaint.kind === 'dim'
+            ? { start: view.prefixLength, end: view.draft.length, dimColor: true }
+            : { start: view.prefixLength, end: view.draft.length, color: config.ghostPaint.color },
+        ],
 })
 
 /**
@@ -126,7 +133,7 @@ export const attach = (clean: PromptText, completer: Completer, config: Config):
   const matches = completer.complete(prefix, config.limit)
   if (matches.length === 0) return plain(clean.text)
   const view = viewOf(clean.text, matches, 0, config)
-  return { box: boxOf(view), view }
+  return { box: boxOf(view, config), view }
 }
 
 /** Moves the highlighted suggestion by `step`, wrapping at both ends, and rewrites the inline text. */
@@ -138,7 +145,7 @@ export const cycle = (view: CompletionView, step: 1 | -1, config: Config): Outco
     (view.index + step + count) % count,
     config,
   )
-  return { box: boxOf(moved), view: moved }
+  return { box: boxOf(moved, config), view: moved }
 }
 
 /**
@@ -160,13 +167,17 @@ export const withoutGhost = (text: string, view: CompletionView | null): string 
     : text
 
 /**
- * Chooses how many suggestions fit in `columns`, counting each button as its word plus four cells of chrome.
+ * Chooses how many suggestions fit in `columns`, counting each match as its word plus `overhead` cells of chrome (five for a button, three for a powerline segment).
  * Always keeps at least one, so a narrow terminal still shows the best match.
  */
-export const fittingMatches = (matches: readonly Completion[], columns: number): readonly Completion[] => {
+export const fittingMatches = (
+  matches: readonly Completion[],
+  columns: number,
+  overhead: number = 5,
+): readonly Completion[] => {
   let used = 0
   const fitting = matches.filter(match => {
-    used += match.word.length + 5
+    used += match.word.length + overhead
     return used <= columns
   })
   return fitting.length > 0 ? fitting : matches.slice(0, 1)

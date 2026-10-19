@@ -39,21 +39,21 @@ const holdView = (on: On, current: CompletionView | null = view): unknown[] => {
 const mountBar = ($: Engine) =>
   $.ui.mount({ plugin: 'cccomplete', surface: 'terminal', component: 'AbovePrompt', props: band })
 
-test('the bar draws one button per match', async ($, on) => {
+test('the buttons style draws one button per match', { options: { bar_style: 'buttons' } }, async ($, on) => {
   holdView(on)
   const ui = await mountBar($)
   const buttons = await ui.findAll({ type: 'Button' })
   expect(buttons.map(button => button.text)).toEqual(['testing', 'tester', 'tests'])
 })
 
-test('with no matches the bar keeps its row and shows the key hint', async ($, on) => {
+test('with no matches the buttons bar keeps its row and shows the key hint', { options: { bar_style: 'buttons' } }, async ($, on) => {
   holdView(on, null)
   const ui = await mountBar($)
   expect(await ui.findAll({ type: 'Button' })).toEqual([])
-  expect((await ui.find({ type: 'Text', text: /tab accepts/ }))?.text).toContain('tab accepts')
+  expect((await ui.find({ type: 'Text', text: /right or ctrl\+e accepts/ }))?.text).toContain('right or ctrl+e accepts')
 })
 
-test('pressing a button fills the prompt with that word and a space', async ($, on: On) => {
+test('pressing a button fills the prompt with that word and a space', { options: { bar_style: 'buttons' } }, async ($, on: On) => {
   const filled: string[] = []
   const written = holdView(on)
   on('prompt.fill', (_$, e) => {
@@ -75,4 +75,19 @@ test('submitting removes the inline suggestion before the model sees the prompt'
   })
   await $.prompt.submit({ text: 'testing', wait: false, origin: { kind: 'composer' } })
   expect(seen).toEqual(['te'])
+})
+
+test('the powerline bar draws a segment and an arrow per match, and marks the active one', async ($, on) => {
+  holdView(on)
+  const ui = await mountBar($)
+  const words = await ui.findAll({ type: 'Text', text: /^ (testing|tester|tests) $/ })
+  expect(words.map(run => run.text)).toEqual([' testing ', ' tester ', ' tests '])
+  expect(await ui.findAll({ type: 'Text', text: '\u{E0B0}' })).toHaveLength(3)
+})
+
+test('with no matches the powerline bar keeps its row and shows the key hint', async ($, on) => {
+  holdView(on, null)
+  const ui = await mountBar($)
+  expect(await ui.findAll({ type: 'Button' })).toEqual([])
+  expect((await ui.find({ type: 'Text', text: /right or ctrl\+e accepts/ }))?.text).toContain('right or ctrl+e accepts')
 })

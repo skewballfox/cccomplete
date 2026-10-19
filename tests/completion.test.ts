@@ -14,7 +14,8 @@ const trained = (): CompletionTrie => {
   return trie
 }
 
-const config = (change: Partial<Config> = {}): Config => ({ ...DEFAULTS, ...change })
+/** Inline by default, because most of these tests exercise the inline suggestion; the shipped default is `bar`. */
+const config = (change: Partial<Config> = {}): Config => ({ ...DEFAULTS, display: 'inline', ...change })
 
 const typed = (text: string): PromptText => ({ text, cursor: text.length })
 
@@ -36,6 +37,12 @@ describe('attach', () => {
     expect(box).toEqual({ text: 'testing', cursor: 2, decorations: [{ start: 2, end: 7, dimColor: true }] })
     expect(view?.matches.map(match => match.word)).toEqual(['testing', 'tests', 'tested', 'tester'])
     expect(view).toMatchObject({ draft: 'testing', prefixLength: 2, ghostLength: 5, index: 0 })
+  })
+
+  test('paints the inline text in the configured colour', () => {
+    const ghostPaint = { kind: 'color', color: '#1e1e1e' } as const
+    const { box } = attach(typed('te'), trained(), config({ ghostPaint }))
+    expect(box.decorations).toEqual([{ start: 2, end: 7, color: '#1e1e1e' }])
   })
 
   test('adds no inline text in bar mode', () => {
@@ -81,11 +88,12 @@ describe('detach', () => {
 describe('actionFor', () => {
   test('maps the configured keys, and only while suggestions show', () => {
     const view = viewOf('te')
-    expect(actionFor({ key: 'tab' }, view, config())).toBe('accept')
-    expect(actionFor({ key: 'n', ctrl: true }, view, config())).toBe('next')
-    expect(actionFor({ key: 'p', ctrl: true }, view, config())).toBe('previous')
+    expect(actionFor({ key: 'right' }, view, config())).toBe('accept')
+    expect(actionFor({ key: 'e', ctrl: true }, view, config())).toBe('accept')
+    expect(actionFor({ key: 'd', ctrl: true }, view, config())).toBe('next')
+    expect(actionFor({ key: 'a', ctrl: true }, view, config())).toBe('previous')
     expect(actionFor({ key: 'x' }, view, config())).toBeNull()
-    expect(actionFor({ key: 'tab' }, null, config())).toBeNull()
+    expect(actionFor({ key: 'right' }, null, config())).toBeNull()
     expect(actionFor(undefined, view, config())).toBeNull()
   })
 })

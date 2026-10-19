@@ -10,22 +10,53 @@ describe('parseConfig', () => {
     expect(problems).toEqual([])
   })
 
+  test('paints the inline suggestion dim by default, or in a colour', () => {
+    expect(parseConfig({}).config.ghostPaint).toEqual({ kind: 'dim' })
+    expect(parseConfig({ ghost_color: ' #1e1e1e ' }).config.ghostPaint).toEqual({ kind: 'color', color: '#1e1e1e' })
+    expect(parseConfig({ ghost_color: 'Black' }).config.ghostPaint).toEqual({ kind: 'color', color: 'Black' })
+    expect(parseConfig({ ghost_color: 'DIM' }).config.ghostPaint).toEqual({ kind: 'dim' })
+  })
+
+  test('reads the dictionary source: bundled, none, or a file path', () => {
+    expect(parseConfig({}).config.dictionary).toEqual({ kind: 'bundled' })
+    expect(parseConfig({ dictionary: ' NONE ' }).config.dictionary).toEqual({ kind: 'none' })
+    expect(parseConfig({ dictionary: 'Bundled' }).config.dictionary).toEqual({ kind: 'bundled' })
+    expect(parseConfig({ dictionary: ' /usr/share/dict/words ' }).config.dictionary).toEqual({
+      kind: 'file',
+      path: '/usr/share/dict/words',
+    })
+  })
+
+  test('refuses an empty or non-text dictionary option', () => {
+    const empty = parseConfig({ dictionary: '  ' })
+    expect(empty.config.dictionary).toEqual({ kind: 'bundled' })
+    expect(empty.problems.map(({ option, reason }) => [option, reason])).toEqual([['dictionary', 'empty']])
+    expect(parseConfig({ dictionary: 3 }).problems.map(({ reason }) => reason)).toEqual(['wrong-type'])
+  })
+
+  test('refuses a colour that is not a name or a hex value', () => {
+    const { config, problems } = parseConfig({ ghost_color: 'rgb(1,2,3)' })
+    expect(config.ghostPaint).toEqual({ kind: 'dim' })
+    expect(problems.map(({ option, reason }) => [option, reason])).toEqual([['ghost_color', 'not-a-color']])
+  })
+
   test('reads every valid option', () => {
     const { config, problems } = parseConfig({
       accept_key: 'ctrl+y',
       next_key: 'meta+j',
       previous_key: 'meta+k',
       display: 'bar',
+      bar_style: 'buttons',
       limit: 7,
       min_prefix: 3,
       trailing_space: false,
       sources: 'prompts',
     })
     expect(problems).toEqual([])
-    expect(formatCombo(config.accept)).toBe('ctrl+y')
+    expect(config.accept.map(formatCombo)).toEqual(['ctrl+y'])
     expect(formatCombo(config.next)).toBe('meta+j')
     expect(formatCombo(config.previous)).toBe('meta+k')
-    expect(config).toMatchObject({ display: 'bar', limit: 7, minPrefix: 3, trailingSpace: false, sources: 'prompts' })
+    expect(config).toMatchObject({ display: 'bar', barStyle: 'buttons', limit: 7, minPrefix: 3, trailingSpace: false, sources: 'prompts' })
   })
 
   test('falls back to the default and reports each invalid option', () => {
@@ -48,9 +79,32 @@ describe('parseConfig', () => {
     ])
   })
 
+  test('reads a comma-separated list of accept keys', () => {
+    const { config, problems } = parseConfig({ accept_key: ' right ,ctrl+y,tab' })
+    expect(problems).toEqual([])
+    expect(config.accept.map(formatCombo)).toEqual(['right', 'ctrl+y', 'tab'])
+  })
+
+  test('splits the accept list on commas but keeps a comma that is itself the key', () => {
+    const { config, problems } = parseConfig({ accept_key: 'right, ctrl+,' })
+    expect(problems).toEqual([])
+    expect(config.accept.map(formatCombo)).toEqual(['right', 'ctrl+,'])
+  })
+
+  test('refuses the whole accept list when one entry is invalid', () => {
+    const { config, problems } = parseConfig({ accept_key: 'right, n' })
+    expect(config.accept).toEqual(DEFAULTS.accept)
+    expect(problems.map(({ option, reason }) => [option, reason])).toEqual([['accept_key', 'needs-modifier']])
+  })
+
+  test('reports a next key that clashes with any accept key', () => {
+    const { problems } = parseConfig({ accept_key: 'right, ctrl+j', next_key: 'ctrl+j' })
+    expect(problems.map(({ option, reason }) => [option, reason])).toEqual([['next_key', 'duplicate-binding']])
+  })
+
   test('keeps a key bound twice and reports the later action', () => {
-    const { config, problems } = parseConfig({ accept_key: 'ctrl+n', previous_key: 'ctrl+n' })
-    expect([config.accept, config.next, config.previous].map(formatCombo)).toEqual(['ctrl+n', 'ctrl+n', 'ctrl+n'])
+    const { config, problems } = parseConfig({ accept_key: 'ctrl+n', next_key: 'ctrl+n', previous_key: 'ctrl+n' })
+    expect([...config.accept, config.next, config.previous].map(formatCombo)).toEqual(['ctrl+n', 'ctrl+n', 'ctrl+n'])
     expect(problems.map(({ option, reason }) => [option, reason])).toEqual([
       ['next_key', 'duplicate-binding'],
       ['previous_key', 'duplicate-binding'],
