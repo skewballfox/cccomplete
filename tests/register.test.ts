@@ -39,8 +39,10 @@ const boot = async (
     toasts.push(e.text)
     return { value: undefined }
   })
+  // The English model reads as empty unless a test gives it, so most tests count only their own words.
+  const known = { '/data/english.tsv': '', ...files }
   on('fs.read', (_$, e, next) => {
-    const found = Object.entries(files).find(([suffix]) => e.path.endsWith(suffix))
+    const found = Object.entries(known).find(([suffix]) => e.path.endsWith(suffix))
     return found === undefined ? next(e) : { value: found[1] }
   })
   await $.session.start({ cwd: '/', surface: null, isInteractive: true })
@@ -79,21 +81,21 @@ const dictionary = '# header\nquokka\nwombat\nplatypus\n'
 test('seeds the index from the bundled dictionary at session start', async ($, on) => {
   const status = await boot($, on, { '/data/dictionary.txt': dictionary })
   const text = await status()
-  expect(text).toContain('words indexed: 3')
+  expect(text).toContain('English: 3 words')
   expect(text).toContain('dictionary: bundled, 3 words')
 })
 
 test('seeds the index from the dictionary file the option names', { options: { dictionary: '/words/mine.txt' } }, async ($, on) => {
   const status = await boot($, on, { '/words/mine.txt': 'alpha\nbeta\n', '/data/dictionary.txt': dictionary })
   const text = await status()
-  expect(text).toContain('words indexed: 2')
+  expect(text).toContain('English: 2 words')
   expect(text).toContain('dictionary: /words/mine.txt, 2 words')
 })
 
 test('falls back to the bundled dictionary and says so when the named file cannot be read', { options: { dictionary: '/words/gone.txt' } }, async ($, on) => {
   const toasts: string[] = []
   const status = await boot($, on, { '/data/dictionary.txt': dictionary }, toasts)
-  expect(await status()).toContain('words indexed: 3')
+  expect(await status()).toContain('English: 3 words')
   expect(toasts).toEqual(['dictionary: cannot read "/words/gone.txt"; using the bundled dictionary.'])
 })
 
@@ -135,7 +137,7 @@ test('counts the slash commands the user runs and keeps the count in the store',
 test('builds a fresh index at each session start, so a /clear does not count the dictionary twice', async ($, on) => {
   const status = await boot($, on, { '/data/dictionary.txt': 'quokka\n' })
   await $.session.start({ cwd: '/', surface: null, isInteractive: true })
-  expect(await status()).toContain('words indexed: 1 ')
+  expect(await status()).toContain('English: 1 words')
 })
 
 test('learns the transcript at session start, tool calls included', async ($, on) => {
@@ -224,7 +226,7 @@ test('records a failed session start step and keeps the rest of the index', asyn
   const host: Host = { store: {}, commands: [], messages: [], messagesError: 'transcript unavailable' }
   const status = await boot($, on, { '/data/dictionary.txt': 'quokka\n' }, [], host)
   const text = await status()
-  expect(text).toContain('words indexed: 1 ')
+  expect(text).toContain('English: 1 words')
   // The kit reports a stand-in that throws as unanswered, so the reason it gives is its own.
   expect(text).toContain('failures: session.start transcript:')
 })

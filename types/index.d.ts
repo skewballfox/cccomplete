@@ -27,6 +27,9 @@ export type Tick = number & { readonly __brand: 'Tick' }
 /** Suggestions a lookup may return, 1 to 9. */
 export type SuggestionLimit = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
 
+/** The fewest letters a match must add to the prefix, 1 to 3. */
+export type Gain = 1 | 2 | 3
+
 /** One suggestion: the whole word, and the text that completes the prefix typed so far. */
 export type Completion = {
   readonly word: Word

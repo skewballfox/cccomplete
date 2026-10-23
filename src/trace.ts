@@ -43,6 +43,9 @@ export const traceEdit = (
   outcome: Outcome,
   ms: number,
 ): string => {
-  const shown = outcome.view === null ? 'no matches' : `${outcome.view.language}, ${outcome.view.matches.length} matches`
+  const shown =
+    outcome.view === null
+      ? 'no matches'
+      : `${outcome.view.language}, ${outcome.view.matches.length} matches, ${outcome.certified} certified`
   return `prompt.edit ${key === undefined ? 'no key' : formatPress(key)} → ${action}: ${shown} (${ms.toFixed(3)} ms)`
 }

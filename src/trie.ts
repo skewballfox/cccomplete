@@ -40,6 +40,11 @@ type Node = {
 
 const NO_COMPLETIONS: readonly Completion[] = []
 
+/** A stored word with its count and the tick of its latest occurrence, as a lookup reads it. */
+export type Ranked = Readonly<{ word: Word; count: number; seen: Tick }>
+
+const NO_RANKED: readonly Ranked[] = []
+
 const makeNode = (edge: string, children: Node[]): Node => ({
   edge,
   first: edge.length === 0 ? -1 : edge.charCodeAt(0),
@@ -119,19 +124,29 @@ export class CompletionTrie {
   readonly #root: Node = makeNode('', [])
   #clock = 0
   #size = 0
+  #total = 0
 
   /** Number of distinct words stored. */
   get size(): number {
     return this.#size
   }
 
+  /** Number of occurrences recorded: the sum of every word's count. */
+  get total(): number {
+    return this.#total
+  }
+
   /**
-   * Records one occurrence of `word`.
+   * Records `times` occurrences of `word` at once (one by default).
    *
-   * Cost: O(word.length + depth × TOP_CAPACITY). It runs after a chat turn, never on a keystroke.
+   * Recording several at once ranks the word as that many single inserts in a
+   * row would, so ranks still only rise. It is how counts from a file enter.
+   *
+   * Cost: O(word.length + depth × TOP_CAPACITY). It runs after a chat turn or at session start, never on a keystroke.
    */
-  insert(word: Word): void {
+  insert(word: Word, times: number = 1): void {
     this.#clock += 1
+    this.#total += times
     const tick = this.#clock as Tick
     // The root is on every path: its list holds the best words of the whole trie, for a lookup with no prefix.
     const path: Node[] = [this.#root]
@@ -155,7 +170,7 @@ export class CompletionTrie {
       node.end = { word, count: 0, seen: tick }
       this.#size += 1
     }
-    node.end.count += 1
+    node.end.count += times
     node.end.seen = tick
     for (const visited of path) promote(visited.top, node.end)
   }
@@ -186,6 +201,29 @@ export class CompletionTrie {
       .filter(entry => entry.word.length > typed.length)
       .slice(0, limit)
       .map(entry => ({ word: entry.word, suffix: entry.word.slice(typed.length) }))
+  }
+
+  /**
+   * Returns up to `limit` words that start with `prefix` and are longer than it, best first, with their counts.
+   *
+   * The same list `complete` reads, for a caller that scores the words itself.
+   * Cost: O(prefix.length + limit).
+   */
+  ranked(prefix: Prefix | null, limit: SuggestionLimit): readonly Ranked[] {
+    const typed = prefix ?? ''
+    const node = this.#descend(typed)
+    if (node === null) return NO_RANKED
+    return node.top.filter(entry => entry.word.length > typed.length).slice(0, limit)
+  }
+
+  /**
+   * Returns one stored word's count and latest tick, or `null` when it is not stored.
+   *
+   * Cost: O(word.length).
+   */
+  entry(word: Word): Ranked | null {
+    const node = this.#descend(word)
+    return node !== null && node.end !== null && node.end.word === word ? node.end : null
   }
 
   /** The node whose subtree holds exactly the words that start with `prefix`, or `null`. */

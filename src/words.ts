@@ -31,8 +31,18 @@ export type Charset = 'prose' | 'code'
 /** The context of the first token of a shell command: nothing before it but the start of the line or a pipe. */
 export const COMMAND_START = '' as Context
 
-/** One word as indexed, and the run directly before it when only spaces or tabs separate them. */
-export type Pair = Readonly<{ word: Word; context: Context | null }>
+/**
+ * One word as indexed, with its contexts.
+ *
+ * `context` is the run directly before it, when only spaces or tabs separate
+ * them. `context2` is the two runs before it, joined by one space, under the
+ * same rule; it is `null` whenever `context` is, and for the second token of a
+ * shell command it starts with {@link COMMAND_START}.
+ */
+export type Pair = Readonly<{ word: Word; context: Context | null; context2: Context | null }>
+
+/** The one or two runs before a word, as `contextsBefore` reads them from a draft. */
+export type Contexts = Readonly<{ near: Context | null; far: Context | null }>
 
 const LETTER = /\p{L}/u
 const NON_ASCII_UNIT = /[\p{L}\p{N}_]/u
@@ -108,6 +118,23 @@ export const tailPrefix = (text: string, charset: Charset = 'prose'): Prefix | n
   return length === 0 || length > MAX_WORD_LENGTH ? null : (text.slice(start) as Prefix)
 }
 
+/** A context and where its run starts in the text. */
+type Span = Readonly<{ context: Context; start: number }>
+
+const contextSpan = (text: string, end: number, charset: Charset, commands: boolean): Span | null => {
+  let gapStart = end
+  // A loop on purpose: the keystroke path, bounded by MAX_GAP.
+  while (gapStart > 0 && end - gapStart < MAX_GAP && isGapUnit(text.charCodeAt(gapStart - 1))) gapStart -= 1
+  if (commands) {
+    if (gapStart === 0 || (gapStart === 1 && text.charCodeAt(0) === 0x21)) return { context: COMMAND_START, start: gapStart }
+    if (isCommandBreak(text.charCodeAt(gapStart - 1))) return { context: COMMAND_START, start: gapStart }
+  }
+  if (gapStart === end || gapStart === 0) return null
+  const start = runStart(text, gapStart, charset)
+  const length = gapStart - start
+  return length === 0 || length > MAX_WORD_LENGTH ? null : { context: text.slice(start, gapStart) as Context, start }
+}
+
 /**
  * Returns the context of the word that starts at `end`: the run before it, when only spaces or tabs come between.
  *
@@ -118,19 +145,32 @@ export const tailPrefix = (text: string, charset: Charset = 'prose'): Prefix | n
  *
  * Cost: O(MAX_GAP + MAX_WORD_LENGTH), whatever the draft's length.
  */
-export const contextBefore = (text: string, end: number, charset: Charset, commands: boolean): Context | null => {
-  let gapStart = end
-  // A loop on purpose: the keystroke path, bounded by MAX_GAP.
-  while (gapStart > 0 && end - gapStart < MAX_GAP && isGapUnit(text.charCodeAt(gapStart - 1))) gapStart -= 1
-  if (commands) {
-    if (gapStart === 0 || (gapStart === 1 && text.charCodeAt(0) === 0x21)) return COMMAND_START
-    if (isCommandBreak(text.charCodeAt(gapStart - 1))) return COMMAND_START
-  }
-  if (gapStart === end || gapStart === 0) return null
-  const start = runStart(text, gapStart, charset)
-  const length = gapStart - start
-  return length === 0 || length > MAX_WORD_LENGTH ? null : (text.slice(start, gapStart) as Context)
+export const contextBefore = (text: string, end: number, charset: Charset, commands: boolean): Context | null =>
+  contextSpan(text, end, charset, commands)?.context ?? null
+
+/**
+ * Returns the one-run and two-run contexts of the word that starts at `end`, by the rules of `pairsOf`.
+ *
+ * `far` is the context of the `near` run joined to it by a space, so it keys
+ * the same table `pairsOf` fills. Cost: twice that of {@link contextBefore}.
+ */
+export const contextsBefore = (text: string, end: number, charset: Charset, commands: boolean): Contexts => {
+  const near = contextSpan(text, end, charset, commands)
+  if (near === null) return { near: null, far: null }
+  const outer = near.context === COMMAND_START ? null : contextSpan(text, near.start, charset, commands)
+  return { near: near.context, far: outer === null ? null : joinContexts(outer.context, near.context) }
 }
+
+/** The two-run context key: the outer context, a space, the inner context. */
+const joinContexts = (outer: Context, inner: Context): Context => `${outer} ${inner}` as Context
+
+/**
+ * Validates text read from a file as a prose context: one run of word characters, at most {@link MAX_WORD_LENGTH} long.
+ *
+ * Returns `null` for anything else, so a malformed line in a data file is skipped.
+ */
+export const toContext = (raw: string): Context | null =>
+  raw !== '' && tailPrefix(raw, 'prose') === raw ? (raw as Context) : null
 
 /**
  * Yields every word of `charset` in `text`, in order, one per occurrence, each with its context.
@@ -147,18 +187,22 @@ export function* pairsOf(text: string, charset: Charset, commands: boolean): Gen
   const unit = charset === 'code' ? isCodeUnit : isWordUnit
   let start = -1
   let previous: Context | null = null
+  // The context the previous run had: with `previous`, it makes the two-run context.
+  let previousContext: Context | null = null
   // Whether everything since the last run (or the start of the line) is spaces and tabs.
   let clean = true
   let lineStart = true
   const finish = (stop: number): Pair | null => {
     const run = text.slice(start, stop)
     const context: Context | null = commands && lineStart ? COMMAND_START : clean ? previous : null
+    const context2 = context === null || context === COMMAND_START || previousContext === null ? null : joinContexts(previousContext, context)
     previous = run.length > MAX_WORD_LENGTH ? null : (run as Context)
+    previousContext = context
     clean = true
     lineStart = false
     start = -1
     const word = charset === 'code' ? codeWord(run) : toWord(run)
-    return word === null ? null : { word, context }
+    return word === null ? null : { word, context, context2 }
   }
   for (let at = 0; at < end; at += 1) {
     if (unit(text, at)) {
@@ -178,6 +222,7 @@ export function* pairsOf(text: string, charset: Charset, commands: boolean): Gen
       clean = false
       lineStart = false
       previous = null
+      previousContext = null
     }
   }
   if (start !== -1) {

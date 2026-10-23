@@ -31,9 +31,11 @@ An invalid option falls back to its default. cccomplete shows a toast when a ses
 | `dictionary` | `bundled` | `bundled`, `none` or the path of a dictionary file. See [DICTIONARY.md](DICTIONARY.md). |
 | `limit` | `5` | A whole number from 1 to 9. It sets how many matches the bar offers. |
 | `min_prefix` | `2` | A whole number from 1 to 4. It sets how many letters you type before suggestions appear. |
+| `min_gain` | `2` | A whole number from 1 to 3. A match must add at least this many letters, so a suggestion always saves more than the key that takes it. At `2`, typing `th` offers `that` and `they` but not `the`. Next-word prediction is not affected. |
 | `trailing_space` | `true` | `true` or `false`. It adds a space after an accepted word, except inside code. |
 | `predict_next` | `true` | `true` or `false`. After a space, it suggests the word you most often used after the one before it. |
 | `typeahead` | `true` | `true` or `false`. It also lists matches in Claude Code's own typeahead menu, where `tab` takes one. |
+| `english` | `true` | `true` or `false`. It ranks words with the bundled English word and word-pair counts until your conversation has enough of its own. See [DICTIONARY.md](DICTIONARY.md). |
 | `trace` | `false` | `true` or `false`. It keeps the last 20 hook events and lists them in `/cccomplete`. See [Trace a problem](USAGE.md#trace-a-problem). |
 | `sources` | `both` | `prompts`, `answers` or `both`. It sets which text the index learns from. |
 

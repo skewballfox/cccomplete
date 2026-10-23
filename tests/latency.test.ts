@@ -13,6 +13,7 @@ import type { Word } from '../types'
 import { attach } from '../src/completion'
 import { DEFAULTS } from '../src/config'
 import { parseDictionary } from '../src/dictionary'
+import { parseEnglish } from '../src/english'
 import { Lexicon } from '../src/lexicon'
 import { seeded, vocabulary, word } from './support'
 
@@ -50,11 +51,26 @@ const largeCorpus = (): Corpus => {
     stream.push(previous)
   }
   const lexicon = new Lexicon()
+  lexicon.seedEnglish(parseEnglish(englishText(pool)))
   Array.from({ length: 50 }, (_, turn) => stream.slice(turn * 8000, (turn + 1) * 8000).join(' ')).forEach(text =>
     lexicon.learn([{ kind: 'prose', text }]),
   )
   built = { lexicon, stream }
   return built
+}
+
+/**
+ * Writes an English model file the size of the bundled one: 22,000 words and 2,861 contexts with 60 followers each.
+ * The test kit cannot read the real file, so the bench measures one of the same shape.
+ */
+const englishText = (pool: readonly Word[]): string => {
+  const random = seeded(77)
+  const words = pool.slice(0, 22_000).map((found, at) => `w\t${found}\t${22_000 - at}`)
+  const contexts = pool.slice(0, 2_861).map(context => {
+    const followers = Array.from({ length: 60 }, (_, at) => `${pool[Math.floor(random() * 22_000)] ?? 'fallback'} ${60 - at}`)
+    return `p\t${context}\t${4_000}\t${900}\t${followers.join(' ')}`
+  })
+  return [...words, ...contexts].join('\n')
 }
 
 const percentile = (sorted: readonly number[], fraction: number): number =>
@@ -98,7 +114,7 @@ describe('latency', () => {
     expect(percentile(samples, 0.99)).toBeLessThan(BUDGET_MS)
   })
 
-  test('a one-letter prefix costs the same as a long one, because no subtree is walked', { timeoutMs: 60_000 }, () => {
+  test('a one-letter prefix stays within the bounded cost, because no subtree is walked', { timeoutMs: 60_000 }, () => {
     const { lexicon } = largeCorpus()
     const time = (text: string): number => {
       const started = performance.now()
@@ -132,6 +148,17 @@ describe('latency', () => {
     expect(elapsed).toBeLessThan(1000)
   })
 
+  test('loading an English model the size of the bundled one at session start takes well under a second', { timeoutMs: 60_000 }, () => {
+    const text = englishText(vocabulary(seeded(6), 22_000))
+    const started = performance.now()
+    const lexicon = new Lexicon()
+    lexicon.seedEnglish(parseEnglish(text))
+    const elapsed = performance.now() - started
+    console.log(`English model: parsed and seeded ${lexicon.size.english} words, ${lexicon.size.englishContexts} contexts (${text.length} characters) in ${elapsed.toFixed(1)} ms`)
+    expect(lexicon.size.englishContexts).toBe(2_861)
+    expect(elapsed).toBeLessThan(1000)
+  })
+
   test('loading a 47,000-word dictionary at session start takes well under a second', { timeoutMs: 60_000 }, () => {
     const text = `# header\n${vocabulary(seeded(5), 47_000).join('\n')}\n`
     const started = performance.now()
@@ -139,7 +166,7 @@ describe('latency', () => {
     const added = lexicon.seed(parseDictionary(text))
     const elapsed = performance.now() - started
     console.log(`dictionary: parsed and seeded ${added} words in ${elapsed.toFixed(1)} ms`)
-    expect(lexicon.size.words).toBe(added)
+    expect(lexicon.size.english).toBe(added)
     expect(elapsed).toBeLessThan(1000)
   })
 })

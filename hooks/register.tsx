@@ -23,6 +23,7 @@ import type { CompletionView } from '../types'
 import { accept, actionFor, attach, clip, cycle, fittingMatches, typeaheadRows } from '../src/completion'
 import type { Outcome } from '../src/completion'
 import { describeDictionary, describeUnreadable, parseDictionary } from '../src/dictionary'
+import { parseEnglish } from '../src/english'
 import { describeKeys, describeProblem, parseConfig } from '../src/config'
 import { feeds, promptFeed, toolFeeds, transcriptTurns } from '../src/feeds'
 import type { Feed } from '../src/feeds'
@@ -85,6 +86,14 @@ export const register: Register = (on, options) => {
     dictionaryWords = built.seed(parseDictionary(text))
     trace(`session.start dictionary: ${dictionaryWords} words`)
     if (named !== null && fromFile === null) $.ui.toast(describeUnreadable(named))
+    // The English counts go in after the dictionary, so a word they hold ranks by its count.
+    if (config.english) {
+      const english = await $.fs.read(`${$.plugin.root}/data/english.tsv`).catch((error: unknown) => {
+        fail(describeError('session.start english', error))
+        return ''
+      })
+      trace(`session.start english: ${built.seedEnglish(parseEnglish(english))} words`)
+    }
     try {
       const turns = transcriptTurns(await $.session.messages(), config.sources)
       const recorded = turns.reduce((sum, turn) => sum + built.learn(turn), 0)
@@ -287,7 +296,7 @@ export const register: Register = (on, options) => {
       describeSize(lexicon.size),
       `keys: accept ${config.accept.map(formatCombo).join(' or ')}, next ${formatCombo(config.next)}, previous ${formatCombo(config.previous)}`,
       describeDictionary(config.dictionary, dictionaryWords),
-      `display: ${config.display}; limit: ${config.limit}; minimum letters: ${config.minPrefix}; predict next word: ${config.predictNext}; sources: ${config.sources}`,
+      `display: ${config.display}; limit: ${config.limit}; minimum letters: ${config.minPrefix}; minimum letters added: ${config.minGain}; predict next word: ${config.predictNext}; English counts: ${config.english}; sources: ${config.sources}`,
       `last key the prompt hook received: ${lastKey === null ? 'none yet' : formatPress(lastKey)}`,
       `recent edits that are not plain typing: ${recentEdits.length === 0 ? 'none yet' : recentEdits.join('; ')}`,
       `recent keys that are not letters or digits: ${recentKeys.length === 0 ? 'none yet' : recentKeys.map(formatPress).join(', ')}`,

@@ -8,7 +8,7 @@
  */
 
 import type { Context, Prefix, ViewLanguage } from '../types'
-import { contextBefore, endsInCode, tailPrefix } from './words'
+import { contextsBefore, endsInCode, tailPrefix } from './words'
 
 /** Which index serves a draft: prose, code (inside backticks), shell (after `!`), or slash commands. */
 export type Language = ViewLanguage
@@ -16,14 +16,14 @@ export type Language = ViewLanguage
 /**
  * One lookup.
  *
- * - `word`: complete `prefix`, preferring words seen after `context`.
- * - `next`: no word typed yet after a space; predict what follows `context`.
+ * - `word`: complete `prefix`, ranked by how likely each word is after `context` (one run) and `context2` (two runs).
+ * - `next`: no word typed yet after a space; predict what follows the same contexts.
  * - `code`: complete a code token inside backticks.
  * - `command`: complete a slash command's name.
  */
 export type Target =
-  | Readonly<{ kind: 'word'; language: 'prose' | 'shell'; prefix: Prefix; context: Context | null }>
-  | Readonly<{ kind: 'next'; language: 'prose' | 'shell'; context: Context }>
+  | Readonly<{ kind: 'word'; language: 'prose' | 'shell'; prefix: Prefix; context: Context | null; context2: Context | null }>
+  | Readonly<{ kind: 'next'; language: 'prose' | 'shell'; context: Context; context2: Context | null }>
   | Readonly<{ kind: 'code'; prefix: Prefix }>
   | Readonly<{ kind: 'command'; prefix: Prefix }>
 
@@ -72,11 +72,12 @@ export const targetOf = (text: string, settings: TargetSettings): Target | null 
   const prefix = tailPrefix(text, charset)
   if (prefix !== null) {
     if (prefix.length < settings.minPrefix) return null
-    const context = contextBefore(text, text.length - prefix.length, charset, shell)
-    return { kind: 'word', language, prefix, context }
+    const { near, far } = contextsBefore(text, text.length - prefix.length, charset, shell)
+    return { kind: 'word', language, prefix, context: near, context2: far }
   }
   if (!settings.predictNext) return null
   const ends = text.endsWith(' ') || text.endsWith('\t') || (shell && text === '!')
-  const context = ends ? contextBefore(text, text.length, charset, shell) : null
-  return context === null ? null : { kind: 'next', language, context }
+  if (!ends) return null
+  const { near, far } = contextsBefore(text, text.length, charset, shell)
+  return near === null ? null : { kind: 'next', language, context: near, context2: far }
 }

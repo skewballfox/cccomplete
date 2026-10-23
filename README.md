@@ -10,7 +10,7 @@ This document is for people who use Claude Code in a terminal or in the desktop 
 
 - Every option, the keys that work, and how to hide the inline suggestion. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 - Checking that it works, troubleshooting and limits. See [docs/USAGE.md](docs/USAGE.md).
-- The dictionary file format, its source and how to rebuild it. See [docs/DICTIONARY.md](docs/DICTIONARY.md).
+- The dictionary and the English model: their sources, formats and how to rebuild them. See [docs/DICTIONARY.md](docs/DICTIONARY.md).
 - How the word index works. See [docs/ALGORITHM.md](docs/ALGORITHM.md).
 - How the code is organised. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - The rules for changing the code. See [CLAUDE.md](CLAUDE.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
@@ -27,7 +27,7 @@ It does this in up to three places:
 
 It reads what you are typing:
 
-- **Prose.** It prefers the words you used after the word before the cursor. After a space, it predicts the next word.
+- **Prose.** It ranks words by how likely each is after the one or two words before the cursor, from your conversation and, until that has enough of its own, from everyday English. After a space, it predicts the next word.
 - **Code.** Inside backticks or a code fence, it offers only code: paths, names and identifiers from code in the chat and from the files Claude read or wrote.
 - **Shell.** After a leading `!`, it offers commands and arguments from the shell commands you and Claude ran.
 - **Slash commands.** After `/`, it completes only real command and skill names, the ones you use most first.
@@ -86,17 +86,19 @@ Open `/config` and find the cccomplete rows. A changed option needs a restart of
 | `dictionary` | `bundled` | `bundled`, `none` or the path of a dictionary file. |
 | `limit` | `5` | A whole number from 1 to 9. |
 | `min_prefix` | `2` | A whole number from 1 to 4. |
+| `min_gain` | `2` | A whole number from 1 to 3. |
 | `trailing_space` | `true` | `true` or `false`. |
 | `predict_next` | `true` | `true` or `false`. |
 | `typeahead` | `true` | `true` or `false`. |
 | `trace` | `false` | `true` or `false`. |
+| `english` | `true` | `true` or `false`. |
 | `sources` | `both` | `prompts`, `answers` or `both`. |
 
 Many keys never reach the plugin. Read [Choose keys that reach the plugin](docs/CONFIGURATION.md#choose-keys-that-reach-the-plugin) before you change one.
 
 ## Status
 
-This is version 0.2.0. The automated tests cover the index and its tiers, the draft reading, the feeds, the key and option parsing, the editing pipeline, the typeahead rows, the bar, and the keystroke and typeahead hooks with a stand-in for the editor. The test kit cannot deliver real key presses, so the key results below come from a live session.
+This is version 0.3.0. The automated tests cover the index and its ranking model, the draft reading, the feeds, the key and option parsing, the editing pipeline, the typeahead rows, the bar, and the keystroke and typeahead hooks with a stand-in for the editor. The test kit cannot deliver real key presses, so the key results below come from a live session.
 
 Confirmed in a live terminal session on 2026-10-22, Claude Code 2.1.309, with `trace` on:
 
@@ -108,6 +110,8 @@ Confirmed in a live terminal session on 2026-10-22, Claude Code 2.1.309, with `t
 - `left`, `right` and `tab` never reach the plugin's own key path, so they cannot cycle or accept the inline suggestion. Claude Code keeps `tab`, `up` and `down` for its menu.
 
 Not yet confirmed:
+
+- The ranking model and the English model of 0.3.0, in a live session. The tests and an offline replay of 15 sessions cover them: see [docs/ALGORITHM.md](docs/ALGORITHM.md#what-the-model-is-worth).
 
 - `ctrl+a` as a key in 0.2.0. It still moves the cursor, so it may reach the plugin. It worked in 0.1.0.
 - Code completion inside backticks, and shell completion after `!`: whether a draft in bash mode still holds the `!` in the text the plugin sees.

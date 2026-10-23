@@ -34,8 +34,12 @@ export type PromptBoxOut = Readonly<{
   decorations: readonly GhostStyle[]
 }>
 
-/** What to show after an edit: the box for the host, and the view for the bar. `view` is `null` when nothing is suggested. */
-export type Outcome = Readonly<{ box: PromptBoxOut; view: CompletionView | null }>
+/**
+ * What to show after an edit: the box for the host, and the view for the bar. `view` is `null` when nothing is suggested.
+ *
+ * `certified` counts the leading matches the index proved best (see `Ranking`), for the trace.
+ */
+export type Outcome = Readonly<{ box: PromptBoxOut; view: CompletionView | null; certified: number }>
 
 /** What a configured key does while suggestions are showing. */
 export type Action = 'accept' | 'next' | 'previous'
@@ -44,6 +48,7 @@ export type Action = 'accept' | 'next' | 'previous'
 const plain = (text: string, cursor: number = text.length): Outcome => ({
   box: { text, cursor, decorations: [] },
   view: null,
+  certified: 0,
 })
 
 /**
@@ -100,17 +105,17 @@ export const attach = (box: PromptText, completer: Completer, config: Config): O
   if (box.cursor !== box.text.length) return plain(box.text, box.cursor)
   const target = targetOf(box.text, config)
   if (target === null) return plain(box.text)
-  const matches = completer.lookup(target, config.limit)
+  const { matches, certified } = completer.rank(target, config.limit, config.minGain)
   if (matches.length === 0) return plain(box.text)
   const view = viewOf(box.text, matches, 0, languageOf(target))
-  return { box: boxOf(view, config), view }
+  return { box: boxOf(view, config), view, certified }
 }
 
 /** Moves the highlighted suggestion by `step`, wrapping at both ends, and redraws the inline text. */
 export const cycle = (view: CompletionView, step: 1 | -1, config: Config): Outcome => {
   const count = view.matches.length
   const moved = viewOf(view.draft, view.matches, (view.index + step + count) % count, view.language)
-  return { box: boxOf(moved, config), view: moved }
+  return { box: boxOf(moved, config), view: moved, certified: 0 }
 }
 
 /**
@@ -147,8 +152,8 @@ export const typeaheadRows = (input: TypeaheadInput, completer: Completer, confi
   const target = targetOf(input.text, config)
   if (target === null || target.kind === 'command' || target.kind === 'next') return []
   return completer
-    .lookup(target, config.limit)
-    .map(match => ({ text: input.token + match.suffix, label: match.word, description: 'cccomplete' }))
+    .rank(target, config.limit, config.minGain)
+    .matches.map(match => ({ text: input.token + match.suffix, label: match.word, description: 'cccomplete' }))
 }
 
 /**

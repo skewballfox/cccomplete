@@ -15,6 +15,8 @@ The SPDX identifier is `MIT OR Apache-2.0`.
 
 ### The bundled dictionary
 
+The English model in `data/english.tsv` is built from Tatoeba sentences offered under CC0 1.0, a public domain dedication; it carries no conditions. Its source and rebuild steps are in [docs/DICTIONARY.md](docs/DICTIONARY.md).
+
 The word list in `data/dictionary.txt` is not covered by the licences above. It comes from SCOWL and has its own terms. The notice is in [data/LICENSE-SCOWL.txt](data/LICENSE-SCOWL.txt), and it must travel with any copy of the word list. The source, the changes made to it and the rebuild steps are in [docs/DICTIONARY.md](docs/DICTIONARY.md).
 
 ### Your contributions

@@ -22,8 +22,8 @@ describe('describeFailure and describeError', () => {
 describe('traceEdit', () => {
   test('names the key, the action, the language and the match count, and no draft text', () => {
     const view = { draft: 'secret te', matches: [{ word: word('testing'), suffix: 'sting' }], index: 0, language: 'prose' } as const
-    const outcome = { box: { text: 'secret te', cursor: 9, decorations: [] }, view }
-    expect(traceEdit({ key: 'tab' }, 'accept', outcome, 0.0123)).toBe('prompt.edit tab → accept: prose, 1 matches (0.012 ms)')
+    const outcome = { box: { text: 'secret te', cursor: 9, decorations: [] }, view, certified: 1 }
+    expect(traceEdit({ key: 'tab' }, 'accept', outcome, 0.0123)).toBe('prompt.edit tab → accept: prose, 1 matches, 1 certified (0.012 ms)')
     expect(traceEdit(undefined, 'edit', { ...outcome, view: null }, 0)).toBe('prompt.edit no key → edit: no matches (0.000 ms)')
     expect(traceEdit({ key: 'tab' }, 'accept', outcome, 0)).not.toContain('secret')
   })

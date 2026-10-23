@@ -1,98 +1,222 @@
 /**
- * The index the user meets: every trie the plugin keeps, and the order in which a lookup consults them.
+ * The index the user meets: every trie the plugin keeps, and the model that ranks prose and shell words.
  *
- * Audience: contributors to cccomplete. The ranking argument is in docs/ALGORITHM.md.
+ * Audience: contributors to cccomplete. The model and its bound are argued in docs/ALGORITHM.md.
  *
- * A lookup asks up to three tries for their best matches and takes them in
- * tier order: words seen after the same context first, then words from recent
- * turns, then every word. Each trie's list is exact (see trie.ts), and tier
- * order is fixed, so the merged list is exact too.
+ * Prose and shell words rank by an estimate of how likely each word is after
+ * the one or two runs before it: a Witten–Bell interpolated trigram over the
+ * conversation, whose lowest level, for prose, is the bundled English model.
+ * A keystroke scores only the words in a few stored top lists, never the whole
+ * vocabulary, and reports how many of its results provably equal a full scan.
  */
 
-import type { Completion, Context, SuggestionLimit, Word } from '../types'
+import type { Completion, Context, Gain, Prefix, SuggestionLimit, Word } from '../types'
 import { seedTrie } from './dictionary'
 import type { Target } from './draft'
+import type { EnglishData } from './english'
 import type { Feed } from './feeds'
 import { CompletionTrie } from './trie'
+import type { Ranked } from './trie'
 import { markdownCodeOf, pairsOf, toWord } from './words'
 import type { Charset, Pair } from './words'
-
-/** How many turns the recent tier covers, at least. It covers up to twice as many before it is rebuilt. */
-export const RECENT_TURNS = 8
 
 /** Most uses of one command counted, so a stored count cannot make a rebuild slow. */
 export const MAX_COMMAND_USES = 1000
 
+/**
+ * How many conversation words weigh as much as the English model.
+ *
+ * With `n` words learned, the conversation's own word frequencies get the
+ * weight `n / (n + CONVERSATION_WEIGHT)` and the English model the rest. 500
+ * scored best of 100, 500 and 3,000 in a replay of 15 sessions (2026-10-22).
+ */
+export const CONVERSATION_WEIGHT = 500
+
+/** How many words each stored list gives the scorer: the most a lookup can ask for. */
+const LIST: SuggestionLimit = 9
+
 /** The narrow view the editing code needs of the index, so tests can substitute a fake. */
 export type Completer = {
-  lookup(target: Target, limit: SuggestionLimit): readonly Completion[]
+  rank(target: Target, limit: SuggestionLimit, minGain: Gain): Ranking
 }
+
+/**
+ * A ranked answer: the matches, best first, and how many of the first ones are certified.
+ *
+ * A certified match scores above every word the stored lists left out, so the
+ * first `certified` matches equal what scoring every stored word would give.
+ */
+export type Ranking = Readonly<{ matches: readonly Completion[]; certified: number }>
 
 /** How many words each part of the index holds, for the status command. */
 export type LexiconSize = Readonly<{
   words: number
   contexts: number
-  recent: number
+  english: number
+  englishContexts: number
   code: number
   shell: number
   commands: number
 }>
 
-/** One language's words, and for each context the words seen after it. */
+/** A context table: for each context, the words seen after it. */
+type Follows = Map<Context, CompletionTrie>
+
+/** One language learned from the conversation: every word, and the words after each one-run and two-run context. */
 class Vocabulary {
   readonly words = new CompletionTrie()
-  readonly #follows = new Map<Context, CompletionTrie>()
-
-  get contexts(): number {
-    return this.#follows.size
-  }
+  readonly near: Follows = new Map()
+  readonly far: Follows = new Map()
 
   learn(pair: Pair): void {
     this.words.insert(pair.word)
-    if (pair.context === null) return
-    const known = this.#follows.get(pair.context)
-    const trie = known ?? new CompletionTrie()
-    if (known === undefined) this.#follows.set(pair.context, trie)
-    trie.insert(pair.word)
-  }
-
-  after(context: Context | null): CompletionTrie | undefined {
-    return context === null ? undefined : this.#follows.get(context)
+    if (pair.context !== null) followers(this.near, pair.context).insert(pair.word)
+    if (pair.context2 !== null) followers(this.far, pair.context2).insert(pair.word)
   }
 }
 
-const NONE: readonly Completion[] = []
+/** The trie of words after `context`, made empty the first time. */
+const followers = (table: Follows, context: Context): CompletionTrie => {
+  const known = table.get(context)
+  if (known !== undefined) return known
+  const made = new CompletionTrie()
+  table.set(context, made)
+  return made
+}
+
+/** One English context: its followers, and its true total and distinct count before the file was pruned. */
+type BackgroundContext = Readonly<{ trie: CompletionTrie; total: number; distinct: number }>
+
+/** The English model and the dictionary words: the prose model's lowest level. */
+class Background {
+  readonly words = new CompletionTrie()
+  readonly near = new Map<Context, BackgroundContext>()
+}
+
+/** The counts one word has in each table a score reads. A table that is absent counts zero. */
+type Counts = Readonly<{ word: number; near: number; far: number; english: number; englishNear: number }>
+
+/** The tables a score reads for one lookup, found once per keystroke. */
+type Tables = Readonly<{
+  vocabulary: Vocabulary
+  near: CompletionTrie | undefined
+  far: CompletionTrie | undefined
+  english: Background | null
+  englishNear: BackgroundContext | undefined
+}>
+
+/** Witten–Bell interpolation: trust a context in proportion to how often it occurred against how many different words followed it. */
+const interpolate = (count: number, total: number, distinct: number, lower: number): number => {
+  if (total === 0) return lower
+  const weight = total / (total + distinct)
+  return (weight * count) / total + (1 - weight) * lower
+}
 
 /**
- * Concatenates ranked lists in tier order, drops later copies of a word, and stops at `limit`.
+ * Scores one word from its counts: the estimated probability that it comes next.
  *
- * Exact when each list holds its tier's best `limit` matches: a copy removed
- * from a later tier is a word already taken, so the later tier still has
- * enough distinct words to fill the gap. A loop, because this is the
- * keystroke path and the lists hold at most 9 entries each.
+ * Every weight is fixed for one lookup and none is negative, so the score
+ * rises with each count. The bound in `rank` depends on that.
  */
-export const mergeTiers = (tiers: readonly (readonly Completion[])[], limit: SuggestionLimit): readonly Completion[] => {
-  const merged: Completion[] = []
-  for (const tier of tiers) {
-    for (const match of tier) {
-      if (merged.length === limit) return merged
-      if (!merged.some(taken => taken.word === match.word)) merged.push(match)
-    }
-  }
-  return merged
+const score = (tables: Tables, counts: Counts): number => {
+  const learned = tables.vocabulary.words.total
+  const own = learned === 0 ? 0 : counts.word / learned
+  // An empty English model (turned off, or its file missing) gives the conversation the whole weight.
+  const english = tables.english === null || tables.english.words.total === 0 ? null : tables.english
+  const background =
+    english === null
+      ? 0
+      : interpolate(
+          counts.englishNear,
+          tables.englishNear?.total ?? 0,
+          tables.englishNear?.distinct ?? 0,
+          counts.english / english.words.total,
+        )
+  const ownWeight = english === null ? 1 : learned / (learned + CONVERSATION_WEIGHT)
+  const unigram = ownWeight * own + (1 - ownWeight) * background
+  const bigram = interpolate(counts.near, tables.near?.total ?? 0, tables.near?.size ?? 0, unigram)
+  return interpolate(counts.far, tables.far?.total ?? 0, tables.far?.size ?? 0, bigram)
 }
 
+const countIn = (trie: CompletionTrie | undefined, word: Word): number => trie?.entry(word)?.count ?? 0
+
+/** The largest count a word outside `list` can have in its trie: the last count when the list is full, else zero. */
+const ceiling = (list: readonly Ranked[]): number => (list.length === LIST ? (list[LIST - 1]?.count ?? 0) : 0)
+
+/** One candidate with what orders it: its score, then the recency of its last use, then its English count. */
+type Scored = Readonly<{ word: Word; score: number; seen: number; english: number }>
+
+/** Orders candidates best first: by score, then recency, then English count. The word itself breaks the last tie, so the order is total. */
+const byRank = (a: Scored, b: Scored): number =>
+  b.score - a.score || b.seen - a.seen || b.english - a.english || (a.word < b.word ? -1 : a.word > b.word ? 1 : 0)
+
 /**
- * Every index the plugin keeps: prose, recent prose, code, shell and slash commands.
+ * Ranks the words of a few stored lists by `score`, and certifies the leading ones.
  *
- * It changes only through `seed`, `learn` and `setCommands`, which the hooks
- * module calls at session start and after a turn, never on a keystroke.
+ * Each list is a trie's best words for the prefix, by that trie's count. A
+ * word in none of the lists has, in each trie, a count at most the list's
+ * ceiling, so its score is at most the score of those ceilings. Each result
+ * that scores above that bound is certified.
+ *
+ * A match must add at least `minGain` letters. The filter drops candidates
+ * after the lists are read, so the bound still sees every word a list left out.
+ *
+ * Cost: at most five lists of nine words, five count lookups per word, and a
+ * sort of at most 45 entries. It never walks a subtree.
+ */
+const rank = (tables: Tables, prefix: Prefix | null, limit: SuggestionLimit, minGain: Gain): Ranking => {
+  const sources = [
+    tables.far,
+    tables.near,
+    tables.vocabulary.words,
+    tables.englishNear?.trie,
+    tables.english?.words,
+  ]
+  const lists = sources.map(trie => trie?.ranked(prefix, LIST) ?? [])
+  const [farList = [], nearList = [], wordList = [], englishNearList = [], englishList = []] = lists
+  const bound = score(tables, {
+    word: ceiling(wordList),
+    near: ceiling(nearList),
+    far: ceiling(farList),
+    english: ceiling(englishList),
+    englishNear: ceiling(englishNearList),
+  })
+  const typed = prefix?.length ?? 0
+  const candidates = [...new Set(lists.flatMap(list => list.map(entry => entry.word)))].filter(
+    candidate => candidate.length - typed >= minGain,
+  )
+  const scored = candidates
+    .map((word): Scored => {
+      const english = countIn(tables.english?.words, word)
+      const counts = {
+        word: countIn(tables.vocabulary.words, word),
+        near: countIn(tables.near, word),
+        far: countIn(tables.far, word),
+        english,
+        englishNear: countIn(tables.englishNear?.trie, word),
+      }
+      return { word, score: score(tables, counts), seen: tables.vocabulary.words.entry(word)?.seen ?? 0, english }
+    })
+    .sort(byRank)
+    .slice(0, limit)
+  const uncertified = scored.findIndex(entry => entry.score <= bound)
+  return {
+    matches: scored.map(entry => ({ word: entry.word, suffix: entry.word.slice(typed) })),
+    certified: uncertified === -1 ? scored.length : uncertified,
+  }
+}
+
+const NONE: Ranking = { matches: [], certified: 0 }
+
+/**
+ * Every index the plugin keeps: prose, the English model, code, shell and slash commands.
+ *
+ * It changes only through `seed`, `seedEnglish`, `learn` and `setCommands`,
+ * which the hooks module calls at session start and after a turn, never on a keystroke.
  */
 export class Lexicon implements Completer {
   readonly #prose = new Vocabulary()
-  #recent = new CompletionTrie()
-  #turns: readonly string[] = []
-  #turnsSinceRebuild = 0
+  readonly #english = new Background()
   readonly #code = new CompletionTrie()
   readonly #shell = new Vocabulary()
   #commands = new CompletionTrie()
@@ -100,8 +224,9 @@ export class Lexicon implements Completer {
   get size(): LexiconSize {
     return {
       words: this.#prose.words.size,
-      contexts: this.#prose.contexts,
-      recent: this.#recent.size,
+      contexts: this.#prose.near.size + this.#prose.far.size,
+      english: this.#english.words.size,
+      englishContexts: this.#english.near.size,
       code: this.#code.size,
       shell: this.#shell.words.size,
       commands: this.#commands.size,
@@ -109,21 +234,28 @@ export class Lexicon implements Completer {
   }
 
   /**
-   * Adds dictionary words to the prose index so that earlier words rank higher, and returns how many it added.
+   * Adds dictionary words to the English model's words, each once, so that earlier words rank higher, and returns how many it added.
    *
-   * Each word enters once, last word first, so every word the user meets in the
-   * conversation outranks it. Call it before `learn`.
+   * Call it before `seedEnglish`, so a word the English counts also hold ranks by those counts.
    */
   seed(words: readonly Word[]): number {
-    return seedTrie(this.#prose.words, words)
+    return seedTrie(this.#english.words, words)
+  }
+
+  /** Adds the bundled English counts to the English model and returns how many words it holds after. */
+  seedEnglish(data: EnglishData): number {
+    data.words.forEach(([word, count]) => this.#english.words.insert(word, count))
+    data.contexts.forEach(({ context, total, distinct, followers: counted }) => {
+      const trie = new CompletionTrie()
+      counted.forEach(([word, count]) => trie.insert(word, count))
+      this.#english.near.set(context, { trie, total, distinct })
+    })
+    return this.#english.words.size
   }
 
   /** Learns one turn's feeds and returns how many word occurrences it recorded. */
   learn(turn: readonly Feed[]): number {
-    const counts = turn.map(feed => this.#learnFeed(feed))
-    const prose = turn.filter(feed => feed.kind === 'prose').map(feed => feed.text)
-    this.#remember(prose.join('\n'))
-    return counts.reduce((sum, count) => sum + count, 0)
+    return turn.map(feed => this.#learnFeed(feed)).reduce((sum, count) => sum + count, 0)
   }
 
   /**
@@ -139,43 +271,55 @@ export class Lexicon implements Completer {
       const word = toWord(name)
       return word === null ? [] : [word]
     })
-    // Loops on purpose: the host's last command enters first, so the first ranks highest among equal uses.
+    // A loop on purpose: the host's last command enters first, so the first ranks highest among equal uses.
     for (let at = words.length - 1; at >= 0; at -= 1) {
       const word = words[at]
-      if (word !== undefined) trie.insert(word)
-    }
-    for (const word of words) {
-      const count = Math.min(uses[word] ?? 0, MAX_COMMAND_USES)
-      for (let use = 0; use < count; use += 1) trie.insert(word)
+      if (word !== undefined) trie.insert(word, 1 + Math.min(uses[word] ?? 0, MAX_COMMAND_USES))
     }
     this.#commands = trie
     return trie.size
   }
 
+  /** Returns up to `limit` matches for `target`, best first, each adding at least `minGain` letters. */
+  lookup(target: Target, limit: SuggestionLimit, minGain: Gain = 1): readonly Completion[] {
+    return this.rank(target, limit, minGain).matches
+  }
+
   /**
-   * Returns up to `limit` matches for `target`, best first.
+   * Returns up to `limit` matches for `target`, best first, each adding at least `minGain` letters, with how many are certified.
    *
-   * Cost: at most three trie lookups and one merge of their short lists. It never walks a subtree.
+   * Code and command lookups read one exact list, so all their matches are
+   * certified. The gain filter can leave such a list with fewer than `limit`
+   * matches, because it reads only the stored best words.
    */
-  lookup(target: Target, limit: SuggestionLimit): readonly Completion[] {
+  rank(target: Target, limit: SuggestionLimit, minGain: Gain): Ranking {
     switch (target.kind) {
       case 'command':
-        return this.#commands.complete(target.prefix, limit)
+        return exact(gained(this.#commands.complete(target.prefix, LIST), minGain).slice(0, limit))
       case 'code':
-        return this.#code.complete(target.prefix, limit)
-      case 'next':
-        return this.#vocabulary(target.language).after(target.context)?.complete(null, limit) ?? NONE
+        return exact(gained(this.#code.complete(target.prefix, LIST), minGain).slice(0, limit))
+      case 'next': {
+        // A guess after every space would be noise: predict only after a word with known followers.
+        const tables = this.#tables(target.language, target.context, target.context2)
+        return tables.near === undefined && tables.englishNear === undefined ? NONE : rank(tables, null, limit, minGain)
+      }
       case 'word': {
-        const vocabulary = this.#vocabulary(target.language)
-        const after = vocabulary.after(target.context)?.complete(target.prefix, limit) ?? NONE
-        const recent = target.language === 'prose' ? this.#recent.complete(target.prefix, limit) : NONE
-        return mergeTiers([after, recent, vocabulary.words.complete(target.prefix, limit)], limit)
+        const ranking = rank(this.#tables(target.language, target.context, target.context2), target.prefix, limit, minGain)
+        return ranking.matches.length === 0 ? NONE : ranking
       }
     }
   }
 
-  #vocabulary(language: 'prose' | 'shell'): Vocabulary {
-    return language === 'prose' ? this.#prose : this.#shell
+  #tables(language: 'prose' | 'shell', context: Context | null, context2: Context | null): Tables {
+    const vocabulary = language === 'prose' ? this.#prose : this.#shell
+    const english = language === 'prose' ? this.#english : null
+    return {
+      vocabulary,
+      near: context === null ? undefined : vocabulary.near.get(context),
+      far: context2 === null ? undefined : vocabulary.far.get(context2),
+      english,
+      englishNear: context === null || english === null ? undefined : english.near.get(context),
+    }
   }
 
   #learnFeed(feed: Feed): number {
@@ -210,27 +354,13 @@ export class Lexicon implements Completer {
     }
     return recorded
   }
-
-  /**
-   * Adds a turn's prose to the recent tier.
-   *
-   * Every {@link RECENT_TURNS} turns the tier is rebuilt from the last
-   * {@link RECENT_TURNS} turns, so it covers between 8 and 15 turns. A rebuild
-   * starts a new trie, so ranks inside it still only rise.
-   */
-  #remember(text: string): void {
-    this.#turns = [...this.#turns, text].slice(-RECENT_TURNS)
-    this.#turnsSinceRebuild += 1
-    if (this.#turnsSinceRebuild < RECENT_TURNS) {
-      this.#recent.ingest(text)
-      return
-    }
-    const rebuilt = new CompletionTrie()
-    this.#turns.forEach(turn => rebuilt.ingest(turn))
-    this.#recent = rebuilt
-    this.#turnsSinceRebuild = 0
-  }
 }
+
+const exact = (matches: readonly Completion[]): Ranking => ({ matches, certified: matches.length })
+
+/** The matches that add at least `minGain` letters. */
+const gained = (matches: readonly Completion[], minGain: Gain): readonly Completion[] =>
+  matches.filter(match => match.suffix.length >= minGain)
 
 /**
  * Reads the stored command counts, keeping only whole counts from 1 to {@link MAX_COMMAND_USES}.
@@ -255,4 +385,4 @@ export const countUse = (uses: Readonly<Record<string, number>>, name: string): 
 
 /** One plain sentence for the status command. */
 export const describeSize = (size: LexiconSize): string =>
-  `words indexed: ${size.words} (${size.contexts} contexts, ${size.recent} recent); code: ${size.code}; shell: ${size.shell}; commands: ${size.commands}`
+  `words indexed: ${size.words} (${size.contexts} contexts); English: ${size.english} words, ${size.englishContexts} contexts; code: ${size.code}; shell: ${size.shell}; commands: ${size.commands}`

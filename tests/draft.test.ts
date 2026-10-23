@@ -6,8 +6,9 @@ const settings = { minPrefix: 2, predictNext: true } as const
 
 describe('targetOf', () => {
   test('completes prose with the word before as context', () => {
-    expect(targetOf('run te', settings)).toEqual({ kind: 'word', language: 'prose', prefix: 'te', context: 'run' })
-    expect(targetOf('te', settings)).toEqual({ kind: 'word', language: 'prose', prefix: 'te', context: null })
+    expect(targetOf('run te', settings)).toEqual({ kind: 'word', language: 'prose', prefix: 'te', context: 'run', context2: null })
+    expect(targetOf('we run te', settings)).toMatchObject({ context: 'run', context2: 'we run' })
+    expect(targetOf('te', settings)).toEqual({ kind: 'word', language: 'prose', prefix: 'te', context: null, context2: null })
   })
 
   test('drops the context across punctuation or a line break', () => {
@@ -16,7 +17,8 @@ describe('targetOf', () => {
   })
 
   test('predicts the next word after spaces, not after punctuation, and not when turned off', () => {
-    expect(targetOf('run ', settings)).toEqual({ kind: 'next', language: 'prose', context: 'run' })
+    expect(targetOf('run ', settings)).toEqual({ kind: 'next', language: 'prose', context: 'run', context2: null })
+    expect(targetOf('we, run ', settings)).toMatchObject({ context: 'run', context2: null })
     expect(targetOf('run. ', settings)).toBeNull()
     expect(targetOf(' ', settings)).toBeNull()
     expect(targetOf('run ', { ...settings, predictNext: false })).toBeNull()
@@ -36,12 +38,12 @@ describe('targetOf', () => {
   })
 
   test('completes shell tokens after a leading !, with command starts as context', () => {
-    expect(targetOf('!gi', settings)).toEqual({ kind: 'word', language: 'shell', prefix: 'gi', context: '' })
-    expect(targetOf('!git co', settings)).toEqual({ kind: 'word', language: 'shell', prefix: 'co', context: 'git' })
+    expect(targetOf('!gi', settings)).toEqual({ kind: 'word', language: 'shell', prefix: 'gi', context: '', context2: null })
+    expect(targetOf('!git co', settings)).toEqual({ kind: 'word', language: 'shell', prefix: 'co', context: 'git', context2: ' git' })
     expect(targetOf('!ls | gr', settings)).toMatchObject({ context: '' })
     expect(targetOf('!cat ./sr', settings)).toMatchObject({ prefix: './sr', context: 'cat' })
-    expect(targetOf('!git ', settings)).toEqual({ kind: 'next', language: 'shell', context: 'git' })
-    expect(targetOf('!', settings)).toEqual({ kind: 'next', language: 'shell', context: '' })
+    expect(targetOf('!git ', settings)).toEqual({ kind: 'next', language: 'shell', context: 'git', context2: ' git' })
+    expect(targetOf('!', settings)).toEqual({ kind: 'next', language: 'shell', context: '', context2: null })
   })
 
   test('completes code tokens inside backticks, and prose once the span closes', () => {

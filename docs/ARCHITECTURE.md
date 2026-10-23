@@ -20,13 +20,16 @@ All logic lives in `src/` as pure functions. Each function takes plain data and 
 | `types/index.d.ts` | Shared value types and the `$.state` contract. |
 | `src/words.ts` | Defines a prose word and a code token. Splits text into words with their contexts. Reads the prefix, the context and whether the end of a draft is inside code. |
 | `src/trie.ts` | One trie. See ALGORITHM.md. |
-| `src/lexicon.ts` | Every trie the plugin keeps, the tiers and the merge. The command counts. |
+| `src/lexicon.ts` | Every trie the plugin keeps, the Witten–Bell score, the bounded scoring and its certificate. The command counts. |
+| `src/english.ts` | Reads the bundled English model, `data/english.tsv`. |
 | `src/draft.ts` | Decides, from the end of a draft, which index to ask and for what. |
 | `src/feeds.ts` | Decides which text feeds which index: prompts, answers, tool calls and the transcript. |
 | `src/keys.ts` | Parses key combinations and matches them against key presses. |
 | `src/config.ts` | Turns the host's untyped options into one typed `Config`. |
 | `src/completion.ts` | The editing pipeline: attach, cycle, accept, and the typeahead rows. |
 | `src/trace.ts` | The failures always kept and the optional trace, both without draft text. |
+| `scripts/build-english.ts` | Builds `data/english.tsv` from Tatoeba sentences, on a developer's machine. Not part of the plugin. |
+| `data/` | The dictionary (`dictionary.txt`, SCOWL) and the English model (`english.tsv`, Tatoeba CC0). See DICTIONARY.md. |
 | `hooks/register.tsx` | The hooks. |
 | `tests/` | Unit, model-based, latency and hook tests. `support.ts` holds shared helpers. |
 
@@ -35,7 +38,8 @@ All logic lives in `src/` as pure functions. Each function takes plain data and 
 Types carry the rules, so a function's signature states what it accepts and returns.
 
 - `Word`, `Prefix` and `Context` are branded strings. Only `toWord`, `tailPrefix`, `contextBefore` and `pairsOf` build them.
-- `Target` in `src/draft.ts` is a union with one member per kind of lookup: `word`, `next`, `code` and `command`. A `next` target always has a context; a `code` or `command` target never has one.
+- `Target` in `src/draft.ts` is a union with one member per kind of lookup: `word`, `next`, `code` and `command`. A `next` target always has a context; a `code` or `command` target never has one. `word` and `next` also carry the two-word context.
+- `Completer.rank` returns a `Ranking`: the matches and how many of them are certified.
 - `SuggestionLimit` is the union `1 | … | 9`. `PrefixLength` is `1 | … | 4`. `Display`, `Sources` and `ViewLanguage` are literal unions. `parseConfig` is the only place that turns untyped options into them, and `parseCommandUses` the only place that reads the store.
 - `Completer` is the one method of the index that the pipeline needs. Tests can pass a fake.
 
@@ -80,7 +84,7 @@ The plugin writes the `view` value only when it changes, so an idle prompt cause
 
 The index never changes while the user types.
 
-- **`session.start`** builds a fresh index: the dictionary first (`$.fs.read`), then the transcript grouped into turns, tool calls included (`transcriptTurns`), then the command list with the stored counts. A fresh index each time means a `/clear` or a reload never counts the dictionary twice. If the named dictionary cannot be read, it shows a toast and loads the bundled one.
+- **`session.start`** builds a fresh index: the dictionary first (`$.fs.read`), then the English model (`data/english.tsv`, unless `english` is off), then the transcript grouped into turns, tool calls included (`transcriptTurns`), then the command list with the stored counts. A fresh index each time means a `/clear` or a reload never counts the dictionary twice. If the named dictionary cannot be read, it shows a toast and loads the bundled one.
 - **`tool.call`** queues what a finished tool call in the main conversation teaches (`toolFeeds`).
 - **`prompt.submit`** queues the prompt, or a slash command's arguments.
 - **`command.run`** counts a command the user ran and writes the counts to `$.store`. The command index uses the new count after the next turn.

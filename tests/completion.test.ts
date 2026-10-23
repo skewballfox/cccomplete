@@ -66,7 +66,7 @@ describe('attach', () => {
   })
 
   test('predicts the next word after a space, unless turned off', () => {
-    expect(viewOf('run ').matches.map(match => match.word)).toEqual(['tests'])
+    expect(viewOf('run ').matches[0]?.word).toBe('tests')
     expect(attach(typed('run '), trained(), config({ predictNext: false })).view).toBeNull()
   })
 
@@ -110,10 +110,11 @@ describe('cycle', () => {
 
 describe('accept', () => {
   test('writes the chosen word and a space, then predicts what follows it', () => {
-    const outcome = accept(viewOf('ru'), 0, trained(), config())
+    // `ru` → `run` adds one letter, so this test lowers the minimum gain to take it.
+    const outcome = accept(viewOf('ru', { minGain: 1 }), 0, trained(), config())
     expect(outcome.box.text).toBe('run ')
     expect(outcome.box.cursor).toBe(4)
-    expect(outcome.view?.matches.map(match => match.word)).toEqual(['tests'])
+    expect(outcome.view?.matches[0]?.word).toBe('tests')
   })
 
   test('omits the space when configured, inside code, and ignores an index outside the matches', () => {

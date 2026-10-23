@@ -31,8 +31,8 @@ What you get depends on where you type:
 
 | Where | What cccomplete offers |
 | --- | --- |
-| In prose | Words. Words you used after the context come first, then words from recent turns, then every word. |
-| After a space | The word you most often used after the one before the space. |
+| In prose | Words, ranked by how likely each is after the one or two words before it: from your conversation, and from everyday English until your conversation has enough of its own. |
+| After a space | The likeliest next word, when the word before the space has known followers. |
 | Inside backticks or a code fence | Code only: paths, names and identifiers from code in the chat and from files Claude read or wrote. |
 | After a leading `!` | Shell commands and their arguments, from commands you and Claude ran. `!` alone offers your most-used commands. |
 | After a leading `/` | Slash command and skill names only, most-used first. A name you typed in full gets no suggestion. |
@@ -83,11 +83,11 @@ A trace holds no draft text, so you can paste it into a bug report. Turn `trace`
 - **Case matters.** `Prompt` and `prompt` are two words. A prefix completes only to a word that starts with the same letters in the same case.
 - **Words only.** A word has 3 to 64 characters and at least one letter. It may contain `'`, `’` and `-` between letters or digits. A code token may also contain `_ . / - : @`, so `src/trie.ts` is one token.
 - **Code needs a nearby fence.** cccomplete reads the last 4,096 characters to see whether you are inside code. A fence opened earlier than that is not seen.
-- **Ranking.** A word you used after the same context ranks first. Then words from the last 8 to 15 turns. Then every word. Inside each group, a word you used more often ranks higher, and among words used equally often, the more recent one.
+- **Ranking.** Each match gets a score: how likely it is to come next, from how often it followed the one and two words before the cursor, how often you use it, and how common it is in everyday English. A context with few, repeated followers counts for more than one with many different followers. Among equal scores, the word you used more recently ranks higher. See [ALGORITHM.md](ALGORITHM.md#the-score).
 - **The index lives in memory.** It does not persist between sessions. It rebuilds from the dictionary, the transcript and the tool calls in it. cccomplete stores none of your words on disk. It stores one thing: the names of the slash commands you run and how often, in Claude Code's plugin store.
-- **The dictionary ranks last.** A word from your conversation always ranks above a dictionary word. The bundled dictionary holds word stems only, such as `configure` and not `configuring`.
+- **English first, then you.** In a new session, everyday English counts for most of the score. After a few hundred words, your own words dominate. The bundled dictionary holds word stems only, such as `configure` and not `configuring`; the English model holds the forms people write.
 - **The inline suggestion is not text in the prompt.** Claude Code draws it after the cursor. It never reaches Claude or a slash command unless you accept it. Claude Code does not draw it in an empty box, from a remote host, or in screen-reader mode; the bar and the typeahead still show the matches.
 
 ## How fast it is
 
-After each chat turn, cccomplete adds your prompt, Claude's answer and the tools Claude used to the index. While you type, it reads the end of the draft and up to three stored lists of the best matches. It does not search the index, so its cost stays small however many words you have used. On a test conversation of 400,000 words, one keystroke took 0.016 ms on average and 0.038 ms at the 99th percentile. Measured on 2026-10-22 on Linux. [ALGORITHM.md](ALGORITHM.md) explains the method and why it fits.
+After each chat turn, cccomplete adds your prompt, Claude's answer and the tools Claude used to the index. While you type, it reads the end of the draft and up to three stored lists of the best matches. It does not search the index, so its cost stays small however many words you have used. On a test conversation of 400,000 words with an English model loaded, one keystroke took 0.053 ms on average and 0.128 ms at the 99th percentile. Measured on 2026-10-22 on Linux. [ALGORITHM.md](ALGORITHM.md) explains the method and why it fits.

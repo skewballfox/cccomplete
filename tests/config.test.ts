@@ -54,6 +54,19 @@ describe('parseConfig', () => {
     expect(parseConfig({ trace: 'on' }).problems.map(({ option, reason }) => [option, reason])).toEqual([['trace', 'wrong-type']])
   })
 
+  test('reads english, on by default, and refuses a value that is not true or false', () => {
+    expect(parseConfig({}).config.english).toBe(true)
+    expect(parseConfig({ english: false }).config.english).toBe(false)
+    expect(parseConfig({ english: 'no' }).problems.map(({ option, reason }) => [option, reason])).toEqual([['english', 'wrong-type']])
+  })
+
+  test('reads min_gain from 1 to 3, defaulting to 2, and refuses a value outside the range', () => {
+    expect(parseConfig({}).config.minGain).toBe(2)
+    expect(parseConfig({ min_gain: 3 }).config.minGain).toBe(3)
+    expect(parseConfig({ min_gain: 4 }).problems.map(({ option, reason }) => [option, reason])).toEqual([['min_gain', 'out-of-range']])
+    expect(parseConfig({ min_gain: '2' }).problems.map(({ option, reason }) => [option, reason])).toEqual([['min_gain', 'wrong-type']])
+  })
+
   test('refuses a colour that is not a name or a hex value', () => {
     const { config, problems } = parseConfig({ ghost_color: 'rgb(1,2,3)' })
     expect(config.ghostPaint).toEqual({ kind: 'dim' })
