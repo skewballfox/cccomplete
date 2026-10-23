@@ -37,6 +37,9 @@ export type Config = Readonly<{
   limit: SuggestionLimit
   minPrefix: PrefixLength
   trailingSpace: boolean
+  predictNext: boolean
+  typeahead: boolean
+  trace: boolean
   sources: Sources
 }>
 
@@ -52,6 +55,9 @@ export type OptionName =
   | 'limit'
   | 'min_prefix'
   | 'trailing_space'
+  | 'predict_next'
+  | 'typeahead'
+  | 'trace'
   | 'sources'
 
 export type ProblemReason = KeyParseError | 'not-an-option' | 'out-of-range' | 'wrong-type' | 'duplicate-binding' | 'not-a-color'
@@ -71,13 +77,16 @@ export const DEFAULTS: Config = {
   accept: [key('right'), key('ctrl+e')],
   next: key('ctrl+d'),
   previous: key('ctrl+a'),
-  display: 'both',
+  display: 'inline',
   barStyle: 'powerline',
   ghostPaint: { kind: 'dim' },
   dictionary: { kind: 'bundled' },
   limit: 5,
   minPrefix: 2,
   trailingSpace: true,
+  predictNext: true,
+  typeahead: true,
+  trace: false,
   sources: 'both',
 }
 
@@ -183,6 +192,9 @@ export const parseConfig = (options: RawOptions): ConfigResult => {
   const limit = numberField(options['limit'], LIMITS, DEFAULTS.limit)
   const minPrefix = numberField(options['min_prefix'], PREFIX_LENGTHS, DEFAULTS.minPrefix)
   const trailingSpace = booleanField(options['trailing_space'], DEFAULTS.trailingSpace)
+  const predictNext = booleanField(options['predict_next'], DEFAULTS.predictNext)
+  const typeahead = booleanField(options['typeahead'], DEFAULTS.typeahead)
+  const trace = booleanField(options['trace'], DEFAULTS.trace)
   const sources = choiceField(options['sources'], SOURCES, DEFAULTS.sources)
 
   const invalid = (
@@ -197,6 +209,9 @@ export const parseConfig = (options: RawOptions): ConfigResult => {
       ['limit', limit, options['limit']],
       ['min_prefix', minPrefix, options['min_prefix']],
       ['trailing_space', trailingSpace, options['trailing_space']],
+      ['predict_next', predictNext, options['predict_next']],
+      ['typeahead', typeahead, options['typeahead']],
+      ['trace', trace, options['trace']],
       ['sources', sources, options['sources']],
     ] as const
   ).flatMap(([option, field, raw]): readonly ConfigProblem[] =>
@@ -222,6 +237,9 @@ export const parseConfig = (options: RawOptions): ConfigResult => {
       limit: limit.value,
       minPrefix: minPrefix.value,
       trailingSpace: trailingSpace.value,
+      predictNext: predictNext.value,
+      typeahead: typeahead.value,
+      trace: trace.value,
       sources: sources.value,
     },
     problems: [...invalid, ...clashes],

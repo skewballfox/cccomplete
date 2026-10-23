@@ -115,12 +115,7 @@ const promote = (top: Entry[], entry: Entry): void => {
   }
 }
 
-/** The narrow view the editing code needs of a trie, so tests can substitute a fake. */
-export type Completer = {
-  complete(prefix: Prefix, limit: SuggestionLimit): readonly Completion[]
-}
-
-export class CompletionTrie implements Completer {
+export class CompletionTrie {
   readonly #root: Node = makeNode('', [])
   #clock = 0
   #size = 0
@@ -138,7 +133,8 @@ export class CompletionTrie implements Completer {
   insert(word: Word): void {
     this.#clock += 1
     const tick = this.#clock as Tick
-    const path: Node[] = []
+    // The root is on every path: its list holds the best words of the whole trie, for a lookup with no prefix.
+    const path: Node[] = [this.#root]
     let node = this.#root
     let at = 0
     while (at < word.length) {
@@ -164,7 +160,7 @@ export class CompletionTrie implements Completer {
     for (const visited of path) promote(visited.top, node.end)
   }
 
-  /** Inserts every word in `text` and returns how many occurrences it recorded. */
+  /** Inserts every prose word in `text` and returns how many occurrences it recorded. */
   ingest(text: string): number {
     let recorded = 0
     for (const word of wordsOf(text)) {
@@ -177,15 +173,19 @@ export class CompletionTrie implements Completer {
   /**
    * Returns up to `limit` words that start with `prefix` and are longer than it, best first.
    *
+   * A `null` prefix asks for the best words of the whole trie, each suffix the
+   * whole word: what predicts the next word after a space.
+   *
    * Cost: O(prefix.length + limit). It reads one precomputed list and visits no subtree.
    */
-  complete(prefix: Prefix, limit: SuggestionLimit): readonly Completion[] {
-    const node = this.#descend(prefix)
+  complete(prefix: Prefix | null, limit: SuggestionLimit): readonly Completion[] {
+    const typed = prefix ?? ''
+    const node = this.#descend(typed)
     if (node === null) return NO_COMPLETIONS
     return node.top
-      .filter(entry => entry.word.length > prefix.length)
+      .filter(entry => entry.word.length > typed.length)
       .slice(0, limit)
-      .map(entry => ({ word: entry.word, suffix: entry.word.slice(prefix.length) }))
+      .map(entry => ({ word: entry.word, suffix: entry.word.slice(typed.length) }))
   }
 
   /** The node whose subtree holds exactly the words that start with `prefix`, or `null`. */
