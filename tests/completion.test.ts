@@ -1,20 +1,23 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { CompletionView } from '../types'
-import { accept, actionFor, attach, clip, cycle, detach, fittingMatches, ghostOf, withoutGhost } from '../src/completion'
-import type { EditShape, PromptText } from '../src/completion'
+import { accept, actionFor, attach, clip, cycle, fittingMatches, typeaheadRows } from '../src/completion'
+import type { PromptText } from '../src/completion'
 import { DEFAULTS } from '../src/config'
 import type { Config } from '../src/config'
-import { CompletionTrie } from '../src/trie'
+import { Lexicon } from '../src/lexicon'
 import { seeded } from './support'
 
-const trained = (): CompletionTrie => {
-  const trie = new CompletionTrie()
-  trie.ingest('testing testing testing tester tested tests')
-  return trie
+const trained = (): Lexicon => {
+  const lexicon = new Lexicon()
+  lexicon.learn([
+    { kind: 'prose', text: 'testing testing testing tester tested tests. run tests' },
+    { kind: 'prose', text: 'see `src/trie.ts` and `src/tree.ts`' },
+  ])
+  return lexicon
 }
 
-/** Inline by default, because most of these tests exercise the inline suggestion; the shipped default is `bar`. */
+/** Inline by default, because most of these tests exercise the inline suggestion. */
 const config = (change: Partial<Config> = {}): Config => ({ ...DEFAULTS, display: 'inline', ...change })
 
 const typed = (text: string): PromptText => ({ text, cursor: text.length })
@@ -25,35 +28,29 @@ const viewOf = (text: string, change: Partial<Config> = {}): CompletionView => {
   return view
 }
 
-/** The host's part of an edit: apply the splice to the draft. */
-const applyEdit = (edit: EditShape): PromptText => ({
-  text: edit.text.slice(0, edit.start) + edit.inputText + edit.text.slice(edit.end),
-  cursor: edit.start + edit.inputText.length,
-})
-
 describe('attach', () => {
-  test('shows the best match inline, dim, with the cursor before it', () => {
+  test('draws the best match as dim virtual text after the draft, and leaves the draft alone', () => {
     const { box, view } = attach(typed('te'), trained(), config())
-    expect(box).toEqual({ text: 'testing', cursor: 2, decorations: [{ start: 2, end: 7, dimColor: true }] })
+    expect(box).toEqual({ text: 'te', cursor: 2, decorations: [{ start: 2, end: 2, virtualText: 'sting', dimColor: true }] })
     expect(view?.matches.map(match => match.word)).toEqual(['testing', 'tests', 'tested', 'tester'])
-    expect(view).toMatchObject({ draft: 'testing', prefixLength: 2, ghostLength: 5, index: 0 })
+    expect(view).toMatchObject({ draft: 'te', index: 0, language: 'prose' })
   })
 
   test('paints the inline text in the configured colour', () => {
     const ghostPaint = { kind: 'color', color: '#1e1e1e' } as const
     const { box } = attach(typed('te'), trained(), config({ ghostPaint }))
-    expect(box.decorations).toEqual([{ start: 2, end: 7, color: '#1e1e1e' }])
+    expect(box.decorations).toEqual([{ start: 2, end: 2, virtualText: 'sting', color: '#1e1e1e' }])
   })
 
-  test('adds no inline text in bar mode', () => {
+  test('draws no inline text in bar mode, but still finds matches for the bar', () => {
     const { box, view } = attach(typed('te'), trained(), config({ display: 'bar' }))
     expect(box).toEqual({ text: 'te', cursor: 2, decorations: [] })
-    expect(view?.ghostLength).toBe(0)
+    expect(view?.matches).toHaveLength(4)
   })
 
-  test('stays quiet below the minimum length, off a word, or with no match', () => {
+  test('stays quiet below the minimum length, after punctuation, or with no match', () => {
     expect(attach(typed('t'), trained(), config()).view).toBeNull()
-    expect(attach(typed('te '), trained(), config()).view).toBeNull()
+    expect(attach(typed('te. '), trained(), config()).view).toBeNull()
     expect(attach(typed('zz'), trained(), config()).view).toBeNull()
     expect(attach(typed('t'), trained(), config({ minPrefix: 1 })).view).not.toBeNull()
   })
@@ -67,34 +64,36 @@ describe('attach', () => {
   test('limits the number of matches', () => {
     expect(viewOf('te', { limit: 2 }).matches).toHaveLength(2)
   })
-})
 
-describe('detach', () => {
-  test('removes the inline text and clamps positions into the typed text', () => {
-    const view = viewOf('te')
-    const edit: EditShape = { text: view.draft, cursor: 2, start: 2, end: 4, inputText: '' }
-    expect(detach(edit, view)).toEqual({ text: 'te', cursor: 2, start: 2, end: 2, inputText: '' })
+  test('predicts the next word after a space, unless turned off', () => {
+    expect(viewOf('run ').matches[0]?.word).toBe('tests')
+    expect(attach(typed('run '), trained(), config({ predictNext: false })).view).toBeNull()
   })
 
-  test('returns the same edit when no view applies or the draft changed', () => {
-    const edit: EditShape = { text: 'te', cursor: 2, start: 2, end: 2, inputText: 'x' }
-    expect(detach(edit, null)).toBe(edit)
-    expect(detach(edit, viewOf('te'))).toBe(edit)
-    const barView = viewOf('te', { display: 'bar' })
-    expect(detach({ ...edit, text: barView.draft }, barView)).toEqual({ ...edit, text: barView.draft })
+  test('completes code tokens inside backticks', () => {
+    const view = viewOf('open `src/tr')
+    expect(view.matches.map(match => match.word)).toEqual(['src/tree.ts', 'src/trie.ts'])
+    expect(view.language).toBe('code')
   })
 })
 
 describe('actionFor', () => {
   test('maps the configured keys, and only while suggestions show', () => {
     const view = viewOf('te')
-    expect(actionFor({ key: 'right' }, view, config())).toBe('accept')
-    expect(actionFor({ key: 'e', ctrl: true }, view, config())).toBe('accept')
-    expect(actionFor({ key: 'd', ctrl: true }, view, config())).toBe('next')
-    expect(actionFor({ key: 'a', ctrl: true }, view, config())).toBe('previous')
-    expect(actionFor({ key: 'x' }, view, config())).toBeNull()
-    expect(actionFor({ key: 'right' }, null, config())).toBeNull()
-    expect(actionFor(undefined, view, config())).toBeNull()
+    const box = typed('te')
+    expect(actionFor({ key: 'right' }, view, box, config())).toBe('accept')
+    expect(actionFor({ key: 'e', ctrl: true }, view, box, config())).toBe('accept')
+    expect(actionFor({ key: 'd', ctrl: true }, view, box, config())).toBe('next')
+    expect(actionFor({ key: 'a', ctrl: true }, view, box, config())).toBe('previous')
+    expect(actionFor({ key: 'x' }, view, box, config())).toBeNull()
+    expect(actionFor({ key: 'right' }, null, box, config())).toBeNull()
+    expect(actionFor(undefined, view, box, config())).toBeNull()
+  })
+
+  test('ignores a stale view: another draft, or the cursor moved off the end', () => {
+    const view = viewOf('te')
+    expect(actionFor({ key: 'right' }, view, typed('tea'), config())).toBeNull()
+    expect(actionFor({ key: 'right' }, view, { text: 'te', cursor: 1 }, config())).toBeNull()
   })
 })
 
@@ -102,36 +101,26 @@ describe('cycle', () => {
   test('moves the inline text through the matches and wraps at both ends', () => {
     const first = viewOf('te')
     const second = cycle(first, 1, config())
-    expect(ghostOf(second.view ?? first)).toBe('sts')
-    expect(second.box.text).toBe('tests')
+    expect(second.box).toEqual({ text: 'te', cursor: 2, decorations: [{ start: 2, end: 2, virtualText: 'sts', dimColor: true }] })
     const back = cycle(first, -1, config())
     expect(back.view?.index).toBe(3)
-    expect(back.box.text).toBe('tester')
-    expect(back.box.cursor).toBe(2)
+    expect(back.box.decorations[0]?.virtualText).toBe('ster')
   })
 })
 
 describe('accept', () => {
-  test('writes the chosen word and a space, and shows no new suggestion', () => {
-    const outcome = accept(viewOf('te'), 1, config())
-    expect(outcome.box).toEqual({ text: 'tests ', cursor: 6, decorations: [] })
-    expect(outcome.view).toBeNull()
+  test('writes the chosen word and a space, then predicts what follows it', () => {
+    // `ru` → `run` adds one letter, so this test lowers the minimum gain to take it.
+    const outcome = accept(viewOf('ru', { minGain: 1 }), 0, trained(), config())
+    expect(outcome.box.text).toBe('run ')
+    expect(outcome.box.cursor).toBe(4)
+    expect(outcome.view?.matches[0]?.word).toBe('tests')
   })
 
-  test('omits the space when configured, and ignores an index outside the matches', () => {
-    expect(accept(viewOf('te'), 0, config({ trailingSpace: false })).box.text).toBe('testing')
-    expect(accept(viewOf('te'), 99, config()).box.text).toBe('te')
-  })
-})
-
-describe('withoutGhost', () => {
-  test('strips the inline text from submitted text, and nothing else', () => {
-    const view = viewOf('te')
-    expect(withoutGhost('testing', view)).toBe('te')
-    expect(withoutGhost('say testing', view)).toBe('say te')
-    expect(withoutGhost('te', view)).toBe('te')
-    expect(withoutGhost('testing', null)).toBe('testing')
-    expect(withoutGhost('te', viewOf('te', { display: 'bar' }))).toBe('te')
+  test('omits the space when configured, inside code, and ignores an index outside the matches', () => {
+    expect(accept(viewOf('te'), 0, trained(), config({ trailingSpace: false })).box.text).toBe('testing')
+    expect(accept(viewOf('`src/tr'), 1, trained(), config()).box.text).toBe('`src/trie.ts')
+    expect(accept(viewOf('te'), 99, trained(), config()).box).toEqual({ text: 'te', cursor: 2, decorations: [] })
   })
 })
 
@@ -153,9 +142,9 @@ describe('clip', () => {
 })
 
 describe('the whole pipeline', () => {
-  test('keeps the typed text intact through random typing and deleting', () => {
+  test('the box always holds exactly what was typed, and the inline text sits only at its end', () => {
     const random = seeded(7)
-    const trie = trained()
+    const lexicon = trained()
     const settings = config()
     let box: PromptText = typed('')
     let view: CompletionView | null = null
@@ -163,21 +152,44 @@ describe('the whole pipeline', () => {
 
     for (let step = 0; step < 2000; step += 1) {
       const roll = random()
-      const cursor = box.cursor
-      const edit: EditShape =
-        roll < 0.2 && model.length > 0
-          ? { text: box.text, cursor, start: cursor - 1, end: cursor, inputText: '' }
-          : { text: box.text, cursor, start: cursor, end: cursor, inputText: roll < 0.3 ? ' ' : (['t', 'e', 's', 'i', 'n', 'g', 'x'][Math.floor(random() * 7)] ?? 't') }
-      model = edit.inputText === '' ? model.slice(0, -1) : model + edit.inputText
-
-      const outcome = attach(applyEdit(detach(edit, view)), trie, settings)
-      view = outcome.view
-      box = { text: outcome.box.text, cursor: outcome.box.cursor }
-
-      const typedLength = view === null ? box.text.length : view.prefixLength
-      expect(box.text.slice(0, typedLength)).toBe(model)
-      expect(box.cursor).toBe(typedLength)
-      if (view !== null) expect(view.draft).toBe(box.text)
+      const action = actionFor(roll < 0.1 ? { key: 'right' } : undefined, view, box, settings)
+      if (action === 'accept' && view !== null) {
+        const outcome = accept(view, view.index, lexicon, settings)
+        model = outcome.box.text
+        view = outcome.view
+        box = { text: outcome.box.text, cursor: outcome.box.cursor }
+      } else {
+        // The host's part of an edit: delete one character or type one at the cursor.
+        model =
+          roll < 0.25 ? model.slice(0, -1) : model + (['t', 'e', 's', 'i', 'n', 'g', ' ', '`', '.'][Math.floor(random() * 9)] ?? 't')
+        const outcome = attach(typed(model), lexicon, settings)
+        view = outcome.view
+        box = { text: outcome.box.text, cursor: outcome.box.cursor }
+        outcome.box.decorations.forEach(decoration => {
+          expect(decoration.start).toBe(model.length)
+          expect(decoration.virtualText.length).toBeGreaterThan(0)
+        })
+      }
+      expect(box.text).toBe(model)
+      expect(box.cursor).toBe(model.length)
+      if (view !== null) expect(view.draft).toBe(model)
     }
+  })
+})
+
+describe('typeaheadRows', () => {
+  const rows = (text: string, change: Partial<Config> = {}): readonly string[] =>
+    typeaheadRows({ text, cursor: text.length, token: text.split(/\s/).at(-1) ?? '' }, trained(), config(change)).map(row => row.text)
+
+  test('offers each match as a row that rewrites the whole token', () => {
+    expect(rows('say te', { limit: 2 })).toEqual(['testing', 'tests'])
+    expect(rows('open `src/tr')).toEqual(['`src/tree.ts', '`src/trie.ts'])
+  })
+
+  test('offers nothing for slash commands, after a space, off the end, or when turned off', () => {
+    expect(rows('/te')).toEqual([])
+    expect(rows('run ')).toEqual([])
+    expect(rows('te', { typeahead: false })).toEqual([])
+    expect(typeaheadRows({ text: 'te more', cursor: 2, token: 'te' }, trained(), config())).toEqual([])
   })
 })

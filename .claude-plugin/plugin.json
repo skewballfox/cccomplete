@@ -1,8 +1,10 @@
 {
   "name": "cccomplete",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Completes the word at the end of your prompt from a trie of your conversation, with an inline suggestion and a bar of alternatives",
-  "author": { "name": "Joshua Ferguson" },
+  "author": {
+    "name": "Joshua Ferguson"
+  },
   "license": "MIT OR Apache-2.0",
   "types": "./types/index.d.ts",
   "userConfig": {
@@ -27,15 +29,22 @@
     "display": {
       "type": "string",
       "title": "Display",
-      "description": "Where suggestions appear: inline in the prompt, in a bar above it, or both.",
-      "options": ["both", "inline", "bar"],
-      "default": "both"
+      "description": "Where suggestions appear: inline in the prompt (the typeahead menu lists them too), in a bar above it, or both.",
+      "options": [
+        "both",
+        "inline",
+        "bar"
+      ],
+      "default": "inline"
     },
     "bar_style": {
       "type": "string",
       "title": "Bar style",
       "description": "How the bar draws matches: powerline segments (needs a Nerd Font) or plain buttons you can click.",
-      "options": ["powerline", "buttons"],
+      "options": [
+        "powerline",
+        "buttons"
+      ],
       "default": "powerline"
     },
     "ghost_color": {
@@ -66,17 +75,53 @@
       "min": 1,
       "max": 4
     },
+    "min_gain": {
+      "type": "number",
+      "title": "Minimum letters added",
+      "description": "Suggest only matches that add at least this many letters to what you typed, from 1 to 3. At 2, typing th never offers the.",
+      "default": 2,
+      "min": 1,
+      "max": 3
+    },
     "trailing_space": {
       "type": "boolean",
       "title": "Add a space after accepting",
       "description": "Add a space after an accepted word.",
       "default": true
     },
+    "predict_next": {
+      "type": "boolean",
+      "title": "Predict the next word",
+      "description": "After a space, suggest the word that most often followed the one before it.",
+      "default": true
+    },
+    "typeahead": {
+      "type": "boolean",
+      "title": "List matches in the typeahead",
+      "description": "Also list matches in Claude Code's own typeahead menu, where tab takes one.",
+      "default": true
+    },
+    "trace": {
+      "type": "boolean",
+      "title": "Trace",
+      "description": "Keep the last 20 hook events (keys, lookups, timings, session start steps) and list them in /cccomplete. No draft text is kept.",
+      "default": false
+    },
+    "english": {
+      "type": "boolean",
+      "title": "Rank with English word pairs",
+      "description": "Rank words by how often they follow the word before them in everyday English, from the bundled Tatoeba counts, until your conversation has enough of its own.",
+      "default": true
+    },
     "sources": {
       "type": "string",
       "title": "Words come from",
       "description": "Which text feeds the trie: your prompts, Claude's answers, or both.",
-      "options": ["both", "prompts", "answers"],
+      "options": [
+        "both",
+        "prompts",
+        "answers"
+      ],
       "default": "both"
     }
   }

@@ -45,3 +45,14 @@ export const vocabulary = (random: () => number, size: number): readonly Word[] 
   }
   return [...seen].map(word)
 }
+
+/**
+ * Raises an event the test kit carries at run time but its types do not declare, such as `prompt.edit`.
+ * The result is `unknown`, so a test checks its shape with `expect`.
+ */
+export const raise = async (noun: object, name: string, input: unknown): Promise<unknown> => {
+  const call: unknown = Reflect.get(noun, name)
+  if (typeof call !== 'function') throw new Error(`the test kit has no ${name}`)
+  const result: unknown = await Reflect.apply(call, noun, [input])
+  return result
+}

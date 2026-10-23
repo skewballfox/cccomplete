@@ -1,10 +1,10 @@
 # The dictionary: format, source and rebuild
 
-**Who this is for:** people who want to replace the bundled dictionary with their own, and contributors who need to rebuild or check the bundled file.
+**Who this is for:** people who want to replace the bundled dictionary with their own, and contributors who need to rebuild or check the bundled dictionary or the bundled English model.
 
 **What this document does not cover:** how the index ranks words (see [ALGORITHM.md](ALGORITHM.md)) and how to install the plugin (see [../README.md](../README.md)).
 
-**Evidence dates:** facts about the source come from the SCOWL/ESDB repository and its release page on GitHub, read on 2026-10-19.
+**Evidence dates:** facts about the dictionary's source come from the SCOWL/ESDB repository and its release page on GitHub, read on 2026-10-19. Facts about the English model's source come from the Tatoeba downloads page and its export files, read on 2026-10-22.
 
 ## Purpose
 
@@ -52,15 +52,13 @@ observability
 
 ## Ranking
 
-cccomplete adds each dictionary word to the index once, so each has a count of one. It adds them last line first. The first line therefore has the newest position and ranks highest among words with equal counts.
+The dictionary and the English model form the lowest level of the ranking model (see [ALGORITHM.md](ALGORITHM.md)). cccomplete adds each dictionary word to the English index once, last line first, so among dictionary words an earlier line ranks higher. Then it adds the English model's counts, so a word the model holds ranks by how common it is in everyday English.
 
-The index ranks by count, then by recency. So:
+The conversation takes over as it grows. With `N` words learned, the conversation's own frequencies get the weight `N / (N + 500)` and the English level the rest. So:
 
-- A word you have used once ranks above any dictionary word, because it is newer.
-- A word you use more often ranks above words you use less often, and above every dictionary word.
-- Among dictionary words, an earlier line ranks higher.
-
-Dictionary words never rank above a word from your conversation. They fill the lists only where your conversation has no match.
+- In a new session, a common English word can rank above a word you have used once.
+- After a few hundred words, the words you use dominate, and a word you use often ranks above every dictionary word.
+- A word that often followed the word before the cursor ranks high at any time, in your conversation or in everyday English.
 
 ## The bundled dictionary
 
@@ -120,8 +118,70 @@ grep -v '^#' data/dictionary.txt | grep -c '[/ 	]'                              
 
 `tests/dictionary.test.ts` covers the reader and the ranking. `tests/register.test.ts` covers the loading, the fallback and the toast.
 
+## The bundled English model
+
+The English model holds word counts and, for common words, the counts of the words that follow them. It lets cccomplete rank by everyday grammar before your conversation has much of its own: after `to`, `be` and `get` rank high; after `I`, `don't` and `think` do. The `english` option turns it off.
+
+| Item | Value |
+| --- | --- |
+| Source | Tatoeba, a collection of example sentences written by volunteers |
+| Home | <https://tatoeba.org> |
+| File used | `eng_sentences_CC0.tsv.bz2`, the English sentences offered under CC0, from <https://downloads.tatoeba.org/exports/per_language/eng/> |
+| Export | Weekly export, last modified 2026-10-17 |
+| SHA-256 of the download | `a144a0c52f8be13bee7cc30eb109eb5836803f22128a8ef8376c1ca5c6c5cf8a` |
+| Sentences | 41,513 |
+| Licence | CC0 1.0 Universal, a public domain dedication. The downloads page (read 2026-10-22) says "A part of our sentences are also available under CC0 1.0". No notice has to travel with the file. |
+
+Why this subset: Tatoeba's full English export (2,039,120 sentences) is under CC BY 2.0 FR, which needs attribution. In a replay of 15 local sessions, the CC0 subset gave the same gain as the full set (word completion top-5: 64.0% with either). See [ALGORITHM.md](ALGORITHM.md#what-the-model-is-worth).
+
+### The file
+
+`data/english.tsv` is plain UTF-8 text, about 495 KB. A line that starts with `#` is a comment. Each other line is one tab-separated record:
+
+```text
+w  word  count
+p  context  total  distinct  word count word count ...
+```
+
+- A `w` line gives a word and how often it occurred. Lines run commonest first.
+- A `p` line gives a context, how many words followed it, how many different words followed it, and its commonest followers with their counts. `total` and `distinct` are taken before pruning, because the smoothing weight needs the true values.
+- Words and contexts follow the plugin's own rules in `src/words.ts`. A line that does not parse is skipped.
+
+### What the build changes
+
+`scripts/build-english.ts` reads the sentences with the plugin's own tokenizer and keeps:
+
+1. words seen at least twice (22,151 words);
+2. the 3,000 commonest contexts, each with up to 60 followers seen at least twice after it (2,861 contexts keep at least one).
+
+### Rebuild the English model
+
+Download into an empty scratch directory, not into the repository, and treat the download as untrusted data. Node 23.6 or later runs the script directly.
+
+```bash
+curl -sLO https://downloads.tatoeba.org/exports/per_language/eng/eng_sentences_CC0.tsv.bz2
+sha256sum eng_sentences_CC0.tsv.bz2      # a new weekly export has a new hash: record it in the table above
+bunzip2 -k eng_sentences_CC0.tsv.bz2
+node <repository>/scripts/build-english.ts eng_sentences_CC0.tsv <export date> <repository>/data/english.tsv
+```
+
+Give the export date as `YYYY-MM-DD`, from the file's last-modified date on the downloads server. Then update the table above: the export date, the hash, the sentence count, and the counts the script prints. Rerun `claude plugin test .`.
+
+### Check the English model
+
+Run these in the repository root:
+
+```bash
+grep -c '^w	' data/english.tsv    # the word count the script printed
+grep -c '^p	' data/english.tsv    # the context count the script printed
+wc -c < data/english.tsv           # under 4 MiB, the limit of $.fs.read
+```
+
+`tests/english.test.ts` covers the reader. `tests/lexicon.test.ts` covers the ranking with English counts.
+
 ## Limits
 
-- **A fresh session spends time loading.** Reading and indexing 46,990 words took 57 ms in `tests/latency.test.ts`, on 2026-10-19. It happens once, at session start, and never on a keystroke.
-- **The dictionary lives in memory.** It is loaded again each session.
+- **A fresh session spends time loading.** In `tests/latency.test.ts` on 2026-10-22, reading and indexing 47,000 dictionary words took 145 ms, and an English model of the bundled size 212 ms. It happens once, at session start, and never on a keystroke. [Issue #1](https://github.com/skewballfox/cccomplete/issues/1) proposes loading most of it in the background.
+- **The dictionary and the English model live in memory.** They are loaded again each session.
+- **The English model is small and general.** Its sentences are short, everyday English. It knows grammar, not your project's terms; those come from the conversation.
 - **Whether the bundled path resolves in a live session is not yet confirmed.** The plugin reads `data/dictionary.txt` under the plugin's root directory. The test kit resolves that path, but no live session has confirmed it. If `/cccomplete` shows `dictionary: bundled, 0 words`, the file did not load.

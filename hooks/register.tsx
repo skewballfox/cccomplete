@@ -4,45 +4,61 @@
  * Audience: contributors to cccomplete. The design is in docs/ARCHITECTURE.md.
  *
  * Events used, and what each does:
- *   session.start   register /cccomplete, seed the trie from the transcript
- *   turn.complete   add the finished turn's text to the trie (never on a keystroke)
- *   prompt.submit   remove a leftover inline suggestion, queue the prompt for the trie
- *   prompt.edit     the per-keystroke path: detach, let the host edit, attach
+ *   session.start   register /cccomplete, build the index from the dictionary, the transcript and the command list
+ *   tool.call       queue what a finished tool call teaches (paths, code, shell commands)
+ *   command.run     count each slash command the user runs, and answer /cccomplete
+ *   turn.complete   add the finished turn to the index (never on a keystroke)
+ *   prompt.submit   queue the prompt for the index
+ *   prompt.edit     the per-keystroke path: let the host edit, then look up and draw the inline suggestion
  *   prompt.fill     forget the suggestions when something else rewrites the box
+ *   prompt.change   the same, for a recalled history entry or a cleared box
+ *   prompt.autocomplete  list the matches in the host's typeahead, where tab takes one
  *   ui.render       draw the bar of suggestions above the prompt
- *   command.run     answer /cccomplete
  */
 
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import type { CompletionView } from '../types'
-import { accept, actionFor, attach, clip, cycle, detach, fittingMatches, withoutGhost } from '../src/completion'
-import type { EditShape, Outcome } from '../src/completion'
-import { describeDictionary, describeUnreadable, parseDictionary, seedTrie } from '../src/dictionary'
+import { accept, actionFor, attach, clip, cycle, fittingMatches, typeaheadRows } from '../src/completion'
+import type { Outcome } from '../src/completion'
+import { describeDictionary, describeUnreadable, parseDictionary } from '../src/dictionary'
+import { parseEnglish } from '../src/english'
 import { describeKeys, describeProblem, parseConfig } from '../src/config'
-import type { Sources } from '../src/config'
+import { feeds, promptFeed, toolFeeds, transcriptTurns } from '../src/feeds'
+import type { Feed } from '../src/feeds'
 import { formatCombo, formatPress, recordEdit, remember } from '../src/keys'
 import type { KeyPress } from '../src/keys'
+import { countUse, describeSize, Lexicon, parseCommandUses } from '../src/lexicon'
 import { powerbar } from '../src/powerbar'
-import { CompletionTrie } from '../src/trie'
+import { appendBounded, describeError, describeFailure, MAX_FAILURES, MAX_TRACE, traceEdit } from '../src/trace'
 
-const view = atom({ plugin: 'cccomplete', key: 'view' } as const, null)
+// The shape tag makes a view stored by the version that kept the suggestion in the draft read as `null`.
+const view = atom({ plugin: 'cccomplete', key: 'view' } as const, null, { shape: 'virtual-1' })
 
-/** True when text written by `role` feeds the trie under `sources`. */
-const feeds = (sources: Sources, role: 'user' | 'assistant'): boolean =>
-  sources === 'both' || (sources === 'prompts') === (role === 'user')
+/** The `$.store` key that keeps how often the user ran each slash command, across sessions. */
+const COMMAND_USES = 'command-uses'
 
 export const register: Register = (on, options) => {
   const { config, problems } = parseConfig(options)
-  const trie = new CompletionTrie()
-  const pending: string[] = []
+  let lexicon = new Lexicon()
+  let commandUses: Readonly<Record<string, number>> = {}
+  let pending: readonly Feed[] = []
   let lastKey: KeyPress | null = null
   let recentKeys: readonly KeyPress[] = []
   let recentEdits: readonly string[] = []
   let lastMs = 0
   let worstMs = 0
   let dictionaryWords = 0
+  // Failures are always kept; trace lines only when the `trace` option is on.
+  let failures: readonly string[] = []
+  let traces: readonly string[] = []
+  const fail = (line: string): void => {
+    failures = appendBounded(failures, line, MAX_FAILURES)
+  }
+  const trace = (line: string): void => {
+    if (config.trace) traces = appendBounded(traces, line, MAX_TRACE)
+  }
 
   const measure = <Result,>(work: () => Result): Result => {
     const started = performance.now()
@@ -52,11 +68,14 @@ export const register: Register = (on, options) => {
     return result
   }
 
+  // A fresh index each time, so a /clear or a reload never counts the dictionary twice.
+  // Each step that can fail is caught on its own, so one failure leaves the rest of the index built.
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'cccomplete',
       description: 'Show the completer status and the last key it received',
     })
+    const built = new Lexicon()
     // The dictionary seeds the index first, so every word from the conversation outranks it.
     const named = config.dictionary.kind === 'file' ? config.dictionary.path : null
     const fromFile = named === null ? null : await $.fs.read(named).catch(() => null)
@@ -64,31 +83,95 @@ export const register: Register = (on, options) => {
       config.dictionary.kind === 'none'
         ? ''
         : (fromFile ?? (await $.fs.read(`${$.plugin.root}/data/dictionary.txt`).catch(() => '')))
-    dictionaryWords = seedTrie(trie, parseDictionary(text))
+    dictionaryWords = built.seed(parseDictionary(text))
+    trace(`session.start dictionary: ${dictionaryWords} words`)
     if (named !== null && fromFile === null) $.ui.toast(describeUnreadable(named))
-    const rows = await $.session.messages()
-    rows.filter(row => feeds(config.sources, row.role)).forEach(row => trie.ingest(row.text))
+    // The English counts go in after the dictionary, so a word they hold ranks by its count.
+    if (config.english) {
+      const english = await $.fs.read(`${$.plugin.root}/data/english.tsv`).catch((error: unknown) => {
+        fail(describeError('session.start english', error))
+        return ''
+      })
+      trace(`session.start english: ${built.seedEnglish(parseEnglish(english))} words`)
+    }
+    try {
+      const turns = transcriptTurns(await $.session.messages(), config.sources)
+      const recorded = turns.reduce((sum, turn) => sum + built.learn(turn), 0)
+      trace(`session.start transcript: ${turns.length} turns, ${recorded} words`)
+    } catch (error) {
+      fail(describeError('session.start transcript', error))
+    }
+    try {
+      commandUses = parseCommandUses(await $.store.get(COMMAND_USES))
+    } catch (error) {
+      fail(describeError('session.start store', error))
+    }
+    try {
+      const commands = await $.command.list()
+      trace(`session.start commands: ${built.setCommands(commands.map(command => command.name), commandUses)} of ${commands.length}`)
+    } catch (error) {
+      fail(describeError('session.start commands', error))
+    }
+    lexicon = built
+    pending = []
     if (problems.length > 0) $.ui.toast(problems.map(describeProblem).join(' '))
+    return next(e)
+  }).catch((_$, e, next) => {
+    fail(describeFailure('session.start', next.error))
     return next(e)
   })
 
-  on('turn.complete', async (_$, e, next) => {
-    if (e.agentId === undefined) {
-      const prompts = pending.splice(0)
-      if (config.sources !== 'answers') prompts.forEach(text => trie.ingest(text))
-      if (config.sources !== 'prompts') trie.ingest(e.answer)
+  // The catch handler passes the call on: a bug here must never change what a tool returns.
+  on('tool.call', async (_$, e, next) => {
+    const result = await next(e)
+    if (e.agentId === undefined && feeds(config.sources, 'assistant')) {
+      const use = { tool: e.tool, input: e, text: result.text, isError: result.isError === true }
+      pending = [...pending, ...toolFeeds(use)]
     }
+    return result
+  }).catch((_$, e, next) => {
+    fail(describeFailure('tool.call', next.error))
+    return next(e)
+  })
+
+  on('command.run', async ($, e, next) => {
+    if (e.origin.kind === 'composer') {
+      commandUses = countUse(commandUses, e.command)
+      await $.store.set(COMMAND_USES, commandUses)
+    }
+    return next(e)
+  }).catch((_$, e, next) => {
+    fail(describeFailure('command.run', next.error))
+    return next(e)
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    if (e.agentId === undefined) {
+      const answer: readonly Feed[] = feeds(config.sources, 'assistant') ? [{ kind: 'prose', text: e.answer }] : []
+      lexicon.learn([...pending, ...answer])
+      pending = []
+      const commands = await $.command.list().catch(() => null)
+      if (commands !== null) lexicon.setCommands(commands.map(command => command.name), commandUses)
+      trace(`turn.complete: ${describeSize(lexicon.size)}`)
+    }
+    return next(e)
+  }).catch((_$, e, next) => {
+    fail(describeFailure('turn.complete', next.error))
     return next(e)
   })
 
   // The catch handler passes the prompt on unchanged if this hook fails: a bug here must never block a prompt.
   on('prompt.submit', async ($, e, next) => {
-    const current = await read($, view)
-    const text = withoutGhost(e.text, current)
-    if (current !== null) await update($, view, () => null)
-    if (e.origin.kind === 'composer' || e.origin.kind === 'bridge') pending.push(text)
-    return next(text === e.text ? e : { ...e, text })
-  }).catch((_$, e, next) => next(e))
+    if ((await read($, view)) !== null) await update($, view, () => null)
+    const typed = e.command === undefined ? e.text : e.command.args
+    if ((e.origin.kind === 'composer' || e.origin.kind === 'bridge') && feeds(config.sources, 'user') && typed !== '') {
+      pending = [...pending, promptFeed(typed)]
+    }
+    return next(e)
+  }).catch((_$, e, next) => {
+    fail(describeFailure('prompt.submit', next.error))
+    return next(e)
+  })
 
   on('prompt.edit', async ($, e, next) => {
     const current = await read($, view)
@@ -101,35 +184,52 @@ export const register: Register = (on, options) => {
     }
     recentEdits = recordEdit(recentEdits, { key: e.key ?? null, inputText: e.inputText, start: e.start, end: e.end }, 6)
 
-    const action = actionFor(e.key, current, config)
+    const action = actionFor(e.key, current, { text: e.text, cursor: e.cursor }, config)
     if (action !== null && current !== null) {
       const outcome = measure(() =>
-        action === 'accept' ? accept(current, current.index, config) : cycle(current, action === 'next' ? 1 : -1, config),
+        action === 'accept'
+          ? accept(current, current.index, lexicon, config)
+          : cycle(current, action === 'next' ? 1 : -1, config),
       )
       await publish(outcome)
+      trace(traceEdit(e.key, action, outcome, lastMs))
       return { text: outcome.box.text, cursor: outcome.box.cursor, decorations: [...outcome.box.decorations] }
     }
 
-    const edit: EditShape = {
-      text: e.text,
-      cursor: e.cursor,
-      start: e.start,
-      end: e.end,
-      inputText: e.inputText,
-    }
-    const clean = measure(() => detach(edit, current))
-    const result = await next(clean === edit ? e : { ...e, ...clean })
-    const outcome = measure(() => attach({ text: result.text, cursor: result.cursor }, trie, config))
+    const result = await next(e)
+    const outcome = measure(() => attach({ text: result.text, cursor: result.cursor }, lexicon, config))
     await publish(outcome)
-    return {
-      text: outcome.box.text,
-      cursor: outcome.box.cursor,
-      decorations: [...(result.decorations ?? []), ...outcome.box.decorations],
-    }
+    trace(traceEdit(e.key, 'edit', outcome, lastMs))
+    return { ...result, decorations: [...(result.decorations ?? []), ...outcome.box.decorations] }
+  }).catch((_$, e, next) => {
+    fail(describeFailure('prompt.edit', next.error))
+    return next(e)
   })
 
   on('prompt.fill', async ($, e, next) => {
     if ((await read($, view)) !== null) await update($, view, () => null)
+    return next(e)
+  }).catch((_$, e, next) => {
+    fail(describeFailure('prompt.fill', next.error))
+    return next(e)
+  })
+
+  on('prompt.change', async ($, e, next) => {
+    if ((await read($, view)) !== null) await update($, view, () => null)
+    return next(e)
+  }).catch((_$, e, next) => {
+    fail(describeFailure('prompt.change', next.error))
+    return next(e)
+  })
+
+  // The catch handler passes the menu on: a bug here must never hide the host's own rows.
+  on('prompt.autocomplete', async (_$, e, next) => {
+    const below = await next(e)
+    const rows = measure(() => typeaheadRows(e, lexicon, config))
+    trace(`prompt.autocomplete: ${rows.length} rows`)
+    return rows.length === 0 ? below : { suggestions: [...below.suggestions, ...rows] }
+  }).catch((_$, e, next) => {
+    fail(describeFailure('prompt.autocomplete', next.error))
     return next(e)
   })
 
@@ -178,7 +278,7 @@ export const register: Register = (on, options) => {
             onPress={async () => {
               const live = await read($, view)
               if (live === null) return
-              await $.prompt.fill({ text: accept(live, index, config).box.text, mode: 'replace' })
+              await $.prompt.fill({ text: accept(live, index, lexicon, config).box.text, mode: 'replace' })
               await update($, view, () => null)
             }}
           />
@@ -186,19 +286,27 @@ export const register: Register = (on, options) => {
         {room >= hint.length ? <Text dimColor>{hint}</Text> : null}
       </Box>
     )
+  }).catch((_$, e, next) => {
+    fail(describeFailure('ui.render', next.error))
+    return next(e)
   })
 
   on('command.run', { command: 'cccomplete' }, async () => ({
     text: [
-      `words indexed: ${trie.size}`,
+      describeSize(lexicon.size),
       `keys: accept ${config.accept.map(formatCombo).join(' or ')}, next ${formatCombo(config.next)}, previous ${formatCombo(config.previous)}`,
       describeDictionary(config.dictionary, dictionaryWords),
-      `display: ${config.display}; limit: ${config.limit}; minimum letters: ${config.minPrefix}; sources: ${config.sources}`,
+      `display: ${config.display}; limit: ${config.limit}; minimum letters: ${config.minPrefix}; minimum letters added: ${config.minGain}; predict next word: ${config.predictNext}; English counts: ${config.english}; sources: ${config.sources}`,
       `last key the prompt hook received: ${lastKey === null ? 'none yet' : formatPress(lastKey)}`,
       `recent edits that are not plain typing: ${recentEdits.length === 0 ? 'none yet' : recentEdits.join('; ')}`,
       `recent keys that are not letters or digits: ${recentKeys.length === 0 ? 'none yet' : recentKeys.map(formatPress).join(', ')}`,
       `pipeline time: last ${lastMs.toFixed(3)} ms, worst ${worstMs.toFixed(3)} ms (target: under 13 ms)`,
+      `failures: ${failures.length === 0 ? 'none' : failures.join('; ')}`,
+      ...(config.trace ? ['trace, oldest first:', ...(traces.length === 0 ? ['  nothing yet'] : traces.map(line => `  ${line}`))] : []),
       ...problems.map(describeProblem),
     ].join('\n'),
-  }))
+  })).catch((_$, e, next) => {
+    fail(describeFailure('command.run cccomplete', next.error))
+    return next(e)
+  })
 }

@@ -5,7 +5,7 @@
  * the field falls back to its default and the problem is reported once.
  */
 
-import type { SuggestionLimit } from '../types'
+import type { Gain, SuggestionLimit } from '../types'
 import { formatCombo, parseCombo, sameCombo } from './keys'
 import type { KeyCombo, KeyParseError } from './keys'
 
@@ -36,7 +36,12 @@ export type Config = Readonly<{
   dictionary: DictionarySource
   limit: SuggestionLimit
   minPrefix: PrefixLength
+  minGain: Gain
   trailingSpace: boolean
+  predictNext: boolean
+  typeahead: boolean
+  trace: boolean
+  english: boolean
   sources: Sources
 }>
 
@@ -51,7 +56,12 @@ export type OptionName =
   | 'dictionary'
   | 'limit'
   | 'min_prefix'
+  | 'min_gain'
   | 'trailing_space'
+  | 'predict_next'
+  | 'typeahead'
+  | 'trace'
+  | 'english'
   | 'sources'
 
 export type ProblemReason = KeyParseError | 'not-an-option' | 'out-of-range' | 'wrong-type' | 'duplicate-binding' | 'not-a-color'
@@ -71,18 +81,24 @@ export const DEFAULTS: Config = {
   accept: [key('right'), key('ctrl+e')],
   next: key('ctrl+d'),
   previous: key('ctrl+a'),
-  display: 'both',
+  display: 'inline',
   barStyle: 'powerline',
   ghostPaint: { kind: 'dim' },
   dictionary: { kind: 'bundled' },
   limit: 5,
   minPrefix: 2,
+  minGain: 2,
   trailingSpace: true,
+  predictNext: true,
+  typeahead: true,
+  trace: false,
+  english: true,
   sources: 'both',
 }
 
 const LIMITS = [1, 2, 3, 4, 5, 6, 7, 8, 9] as const satisfies readonly SuggestionLimit[]
 const PREFIX_LENGTHS = [1, 2, 3, 4] as const satisfies readonly PrefixLength[]
+const GAINS = [1, 2, 3] as const satisfies readonly Gain[]
 const DISPLAYS = ['inline', 'bar', 'both'] as const satisfies readonly Display[]
 const BAR_STYLES = ['powerline', 'buttons'] as const satisfies readonly BarStyle[]
 const SOURCES = ['prompts', 'answers', 'both'] as const satisfies readonly Sources[]
@@ -182,7 +198,12 @@ export const parseConfig = (options: RawOptions): ConfigResult => {
   const dictionary = dictionaryField(options['dictionary'], DEFAULTS.dictionary)
   const limit = numberField(options['limit'], LIMITS, DEFAULTS.limit)
   const minPrefix = numberField(options['min_prefix'], PREFIX_LENGTHS, DEFAULTS.minPrefix)
+  const minGain = numberField(options['min_gain'], GAINS, DEFAULTS.minGain)
   const trailingSpace = booleanField(options['trailing_space'], DEFAULTS.trailingSpace)
+  const predictNext = booleanField(options['predict_next'], DEFAULTS.predictNext)
+  const typeahead = booleanField(options['typeahead'], DEFAULTS.typeahead)
+  const trace = booleanField(options['trace'], DEFAULTS.trace)
+  const english = booleanField(options['english'], DEFAULTS.english)
   const sources = choiceField(options['sources'], SOURCES, DEFAULTS.sources)
 
   const invalid = (
@@ -196,7 +217,12 @@ export const parseConfig = (options: RawOptions): ConfigResult => {
       ['dictionary', dictionary, options['dictionary']],
       ['limit', limit, options['limit']],
       ['min_prefix', minPrefix, options['min_prefix']],
+      ['min_gain', minGain, options['min_gain']],
       ['trailing_space', trailingSpace, options['trailing_space']],
+      ['predict_next', predictNext, options['predict_next']],
+      ['typeahead', typeahead, options['typeahead']],
+      ['trace', trace, options['trace']],
+      ['english', english, options['english']],
       ['sources', sources, options['sources']],
     ] as const
   ).flatMap(([option, field, raw]): readonly ConfigProblem[] =>
@@ -221,7 +247,12 @@ export const parseConfig = (options: RawOptions): ConfigResult => {
       dictionary: dictionary.value,
       limit: limit.value,
       minPrefix: minPrefix.value,
+      minGain: minGain.value,
       trailingSpace: trailingSpace.value,
+      predictNext: predictNext.value,
+      typeahead: typeahead.value,
+      trace: trace.value,
+      english: english.value,
       sources: sources.value,
     },
     problems: [...invalid, ...clashes],

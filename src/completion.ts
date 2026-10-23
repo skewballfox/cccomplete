@@ -7,36 +7,25 @@
  *
  * The pipeline, for one edit:
  *
- *   EditShape ──detach──▶ EditShape (no ghost) ──host applies the edit──▶ PromptText
- *       PromptText ──attach──▶ Outcome { box, view }
+ *   host applies the edit ──▶ PromptText ──attach──▶ Outcome { box, view }
  *
- * The inline suggestion ("ghost") is real text in the prompt box, painted dim.
- * `detach` removes it before the host sees the edit, and `attach` writes it
- * back after, so the host edits the text the user typed and nothing else.
+ * The inline suggestion is virtual text: a decoration the host draws after the
+ * cursor, never part of the draft. The host edits and submits exactly what the
+ * user typed, so a suggestion can never reach the model or a slash command.
  */
 
 import type { Completion, CompletionView } from '../types'
 import type { Config } from './config'
+import { languageOf, targetOf } from './draft'
 import { matches as keyMatches } from './keys'
 import type { KeyPress } from './keys'
-import type { Completer } from './trie'
-import { tailPrefix } from './words'
+import type { Completer } from './lexicon'
 
 /** The prompt box as the host reports it. `cursor` counts UTF-16 code units. */
 export type PromptText = Readonly<{ text: string; cursor: number }>
 
-/** One edit as the host reports it: the draft before, and the splice. */
-export type EditShape = Readonly<{
-  text: string
-  cursor: number
-  start: number
-  end: number
-  inputText: string
-  key?: KeyPress
-}>
-
-/** A styled run over the inline suggestion, in the host's decoration shape: dim, or painted in one colour. */
-export type GhostStyle = Readonly<{ start: number; end: number }> &
+/** The inline suggestion, in the host's decoration shape: virtual text at the end of the draft, dim or in one colour. */
+export type GhostStyle = Readonly<{ start: number; end: number; virtualText: string }> &
   (Readonly<{ dimColor: true }> | Readonly<{ color: string }>)
 
 export type PromptBoxOut = Readonly<{
@@ -45,126 +34,127 @@ export type PromptBoxOut = Readonly<{
   decorations: readonly GhostStyle[]
 }>
 
-/** What to show after an edit: the box for the host, and the view for the bar. `view` is `null` when nothing is suggested. */
-export type Outcome = Readonly<{ box: PromptBoxOut; view: CompletionView | null }>
+/**
+ * What to show after an edit: the box for the host, and the view for the bar. `view` is `null` when nothing is suggested.
+ *
+ * `certified` counts the leading matches the index proved best (see `Ranking`), for the trace.
+ */
+export type Outcome = Readonly<{ box: PromptBoxOut; view: CompletionView | null; certified: number }>
 
 /** What a configured key does while suggestions are showing. */
 export type Action = 'accept' | 'next' | 'previous'
-
-/** The inline suggestion text of a view. */
-export const ghostOf = (view: CompletionView): string => view.draft.slice(view.prefixLength)
 
 /** The text with no suggestion, and the cursor where it was (the end, unless told otherwise). */
 const plain = (text: string, cursor: number = text.length): Outcome => ({
   box: { text, cursor, decorations: [] },
   view: null,
+  certified: 0,
 })
 
 /**
- * Removes the inline suggestion from an edit, so the host applies the edit to what the user typed.
+ * Which action `key` triggers, or `null` when no suggestion is showing or the key is not bound.
  *
- * Returns `edit` unchanged when `view` is `null` or describes a different draft.
- * Positions inside the suggestion clamp to its start, so a forward delete cannot eat it.
+ * A view counts as showing only while the box still holds its draft with the
+ * cursor at the end, so a stale view never takes a key.
  */
-export const detach = (edit: EditShape, view: CompletionView | null): EditShape => {
-  if (view === null || view.ghostLength === 0 || edit.text !== view.draft) return edit
-  const limit = view.prefixLength
-  return {
-    ...edit,
-    text: edit.text.slice(0, limit),
-    cursor: Math.min(edit.cursor, limit),
-    start: Math.min(edit.start, limit),
-    end: Math.min(edit.end, limit),
-  }
-}
-
-/** Which action `key` triggers, or `null` when no suggestion is showing or the key is not bound. */
 export const actionFor = (
   key: KeyPress | undefined,
   view: CompletionView | null,
+  box: PromptText,
   config: Config,
 ): Action | null => {
-  if (key === undefined || view === null) return null
+  if (key === undefined || view === null || box.text !== view.draft || box.cursor !== box.text.length) return null
   if (config.accept.some(combo => keyMatches(combo, key))) return 'accept'
   if (keyMatches(config.next, key)) return 'next'
   if (keyMatches(config.previous, key)) return 'previous'
   return null
 }
 
-const viewOf = (
-  typed: string,
-  matches: readonly Completion[],
-  index: number,
-  config: Config,
-): CompletionView => {
-  const ghost = config.display === 'bar' ? '' : (matches[index]?.suffix ?? '')
+const viewOf = (draft: string, matches: readonly Completion[], index: number, language: CompletionView['language']): CompletionView => ({
+  draft,
+  matches,
+  index,
+  language,
+})
+
+const boxOf = (view: CompletionView, config: Config): PromptBoxOut => {
+  const suffix = view.matches[view.index]?.suffix ?? ''
+  const at = view.draft.length
+  const shown = config.display !== 'bar' && suffix !== ''
+  const paint = config.ghostPaint
   return {
-    draft: typed + ghost,
-    prefixLength: typed.length,
-    ghostLength: ghost.length,
-    matches,
-    index,
+    text: view.draft,
+    cursor: at,
+    decorations: !shown
+      ? []
+      : [
+          paint.kind === 'dim'
+            ? { start: at, end: at, virtualText: suffix, dimColor: true }
+            : { start: at, end: at, virtualText: suffix, color: paint.color },
+        ],
   }
 }
 
-const boxOf = (view: CompletionView, config: Config): PromptBoxOut => ({
-  text: view.draft,
-  cursor: view.prefixLength,
-  decorations:
-    view.ghostLength === 0
-      ? []
-      : [
-          config.ghostPaint.kind === 'dim'
-            ? { start: view.prefixLength, end: view.draft.length, dimColor: true }
-            : { start: view.prefixLength, end: view.draft.length, color: config.ghostPaint.color },
-        ],
-})
-
 /**
- * Looks up completions for the word at the end of `clean` and builds the box and view that show them.
+ * Looks up completions for the end of `box` and builds the box and view that show them.
  *
- * Suggests only when the cursor is at the end of the draft and the word is at
- * least `config.minPrefix` long. Otherwise returns the text with no suggestion.
+ * Suggests only when the cursor is at the end of the draft. `targetOf` decides
+ * which index to ask; see draft.ts. Otherwise returns the text with no suggestion.
  */
-export const attach = (clean: PromptText, completer: Completer, config: Config): Outcome => {
-  if (clean.cursor !== clean.text.length) return plain(clean.text, clean.cursor)
-  const prefix = tailPrefix(clean.text)
-  if (prefix === null || prefix.length < config.minPrefix) return plain(clean.text)
-  const matches = completer.complete(prefix, config.limit)
-  if (matches.length === 0) return plain(clean.text)
-  const view = viewOf(clean.text, matches, 0, config)
-  return { box: boxOf(view, config), view }
+export const attach = (box: PromptText, completer: Completer, config: Config): Outcome => {
+  if (box.cursor !== box.text.length) return plain(box.text, box.cursor)
+  const target = targetOf(box.text, config)
+  if (target === null) return plain(box.text)
+  const { matches, certified } = completer.rank(target, config.limit, config.minGain)
+  if (matches.length === 0) return plain(box.text)
+  const view = viewOf(box.text, matches, 0, languageOf(target))
+  return { box: boxOf(view, config), view, certified }
 }
 
-/** Moves the highlighted suggestion by `step`, wrapping at both ends, and rewrites the inline text. */
+/** Moves the highlighted suggestion by `step`, wrapping at both ends, and redraws the inline text. */
 export const cycle = (view: CompletionView, step: 1 | -1, config: Config): Outcome => {
   const count = view.matches.length
-  const moved = viewOf(
-    view.draft.slice(0, view.prefixLength),
-    view.matches,
-    (view.index + step + count) % count,
-    config,
-  )
-  return { box: boxOf(moved, config), view: moved }
+  const moved = viewOf(view.draft, view.matches, (view.index + step + count) % count, view.language)
+  return { box: boxOf(moved, config), view: moved, certified: 0 }
 }
 
 /**
- * Accepts the suggestion at `index`: the typed text, the completion, and a space if configured.
+ * Accepts the suggestion at `index`: the draft, the completion, and a space if configured.
  *
- * Returns no view, so no new suggestion appears until the next edit. An
- * `index` outside the matches leaves the typed text as it is.
+ * Inside code no space follows, because a closing backtick or a `.` usually
+ * does. The result is looked up again, so the next word is predicted at once
+ * when `predictNext` is on. An `index` outside the matches leaves the draft as it is.
  */
-export const accept = (view: CompletionView, index: number, config: Config): Outcome => {
-  const typed = view.draft.slice(0, view.prefixLength)
+export const accept = (view: CompletionView, index: number, completer: Completer, config: Config): Outcome => {
   const match = view.matches[index]
-  return match === undefined ? plain(typed) : plain(typed + match.suffix + (config.trailingSpace ? ' ' : ''))
+  if (match === undefined) return plain(view.draft)
+  const space = config.trailingSpace && view.language !== 'code' ? ' ' : ''
+  const text = view.draft + match.suffix + space
+  return attach({ text, cursor: text.length }, completer, config)
 }
 
-/** Removes a leftover inline suggestion from submitted text, so it never reaches the model. */
-export const withoutGhost = (text: string, view: CompletionView | null): string =>
-  view !== null && view.ghostLength > 0 && text.length > view.ghostLength && text.endsWith(ghostOf(view))
-    ? text.slice(0, text.length - view.ghostLength)
-    : text
+/** The host's prompt box at a typeahead request: the draft, the cursor, and the run of non-space characters that ends at the cursor. */
+export type TypeaheadInput = Readonly<{ text: string; cursor: number; token: string }>
+
+/** One row for the host's typeahead: what taking it writes over the token, and what the row shows. */
+export type TypeaheadRow = Readonly<{ text: string; label: string; description: string }>
+
+/**
+ * Returns the matches as rows of the host's own typeahead, where tab takes one.
+ *
+ * Taking a row writes its `text` over the token, so each row keeps the part
+ * of the token before the prefix (a backtick, a bracket) and adds the
+ * completion. Slash commands get no rows: the host lists them itself. Like
+ * the inline suggestion, rows appear only when the cursor is at the end of the draft.
+ */
+export const typeaheadRows = (input: TypeaheadInput, completer: Completer, config: Config): readonly TypeaheadRow[] => {
+  if (!config.typeahead || input.cursor !== input.text.length) return []
+  const target = targetOf(input.text, config)
+  if (target === null || target.kind === 'command' || target.kind === 'next') return []
+  return completer
+    .rank(target, config.limit, config.minGain)
+    .matches.map(match => ({ text: input.token + match.suffix, label: match.word, description: 'cccomplete' }))
+}
 
 /**
  * Chooses how many suggestions fit in `columns`, counting each match as its word plus `overhead` cells of chrome (five for a button, three for a powerline segment).
